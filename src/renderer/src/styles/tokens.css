@@ -1,0 +1,57 @@
+@import 'tailwindcss';
+
+@theme inline {
+  --font-sans: 'Segoe UI Variable', 'Segoe UI', system-ui, sans-serif;
+  --color-canvas: var(--aurora-canvas);
+  --color-sidebar: var(--aurora-sidebar);
+  --color-surface: var(--aurora-surface);
+  --color-text: var(--aurora-text);
+  --color-muted: var(--aurora-muted);
+  --color-accent: var(--aurora-accent);
+  --color-accent-text: var(--aurora-accent-text);
+  --color-border: var(--aurora-border);
+  --color-danger: var(--aurora-danger);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --breakpoint-shell: 880px;
+}
+
+:root {
+  color-scheme: light;
+  --aurora-canvas: #f6f5f3;
+  --aurora-sidebar: #efeee9;
+  --aurora-surface: #fffcf8;
+  --aurora-text: #1c1b19;
+  --aurora-muted: #6b6760;
+  --aurora-accent: #1f4d45;
+  --aurora-accent-text: #f7f6f3;
+  --aurora-border: #e2dfd8;
+  --aurora-danger: #8f3d32;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+  --aurora-canvas: #141513;
+  --aurora-sidebar: #10110f;
+  --aurora-surface: #1c1d1a;
+  --aurora-text: #eceae4;
+  --aurora-muted: #a39e94;
+  --aurora-accent: #8fbfb3;
+  --aurora-accent-text: #10211d;
+  --aurora-border: #2c2d29;
+  --aurora-danger: #e3a197;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--aurora-canvas);
+  color: var(--aurora-text);
+  font-family: var(--font-sans);
+}

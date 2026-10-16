@@ -1,0 +1,41 @@
+appId: com.rubenosaka.aurora
+productName: aurora
+executableName: Aurora
+npmRebuild: false
+nodeGypRebuild: false
+asar: true
+publish: null
+directories:
+  output: release
+  buildResources: build
+files:
+  - package.json
+  - out/**/*
+  - '!**/*.map'
+  - '!**/*.test.ts'
+  - '!**/*.spec.ts'
+  - '!**/.env'
+  - '!**/.env.*'
+  - '!**/*.{pem,pfx,p12,snk}'
+win:
+  executableName: Aurora
+  icon: build/icon.ico
+  signExecutable: false
+  forceCodeSigning: false
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: dir
+      arch:
+        - x64
+nsis:
+  oneClick: true
+  perMachine: false
+  deleteAppDataOnUninstall: false
+  differentialPackage: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Aurora
+  uninstallDisplayName: Aurora
+  artifactName: Aurora-Setup-${version}.${ext}
