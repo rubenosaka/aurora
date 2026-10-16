@@ -26,7 +26,7 @@ jobs:
           package-manager-cache: false
 
       - name: Activate pnpm
-        run: npm install -g corepack@0.36.0 && corepack enable && corepack prepare pnpm@12.11.2 --activate
+        run: npm install -g corepack@0.36.0 --force && corepack enable && corepack prepare pnpm@12.11.2 --activate
 
       - name: Install
         run: pnpm install --frozen-lockfile

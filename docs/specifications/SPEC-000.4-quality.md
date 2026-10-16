@@ -71,7 +71,7 @@ Prettier uses single quotes, semicolons, no trailing commas, width 100, CRLF, an
 
 ## GitHub Actions
 
-`.github/workflows/quality.yml` runs on `ubuntu-latest` for `push` to `main` and for pull requests. `permissions` is `contents: read`. Node is 22.13.0. `actions/setup-node` sets `package-manager-cache` to false, so it does not look for `pnpm` before the next step installs it. pnpm 12.11.2 is activated afterwards with Corepack 0.36.0. The job runs the commands above. It does not publish, release, or upload artifacts, and it does not read secrets.
+`.github/workflows/quality.yml` runs on `ubuntu-latest` for `push` to `main` and for pull requests. `permissions` is `contents: read`. Node is 22.13.0. `actions/setup-node` sets `package-manager-cache` to false, so it does not look for `pnpm` before the next step installs it. pnpm 12.11.2 is activated afterwards with Corepack 0.36.0. That global install uses `--force` because a Windows runner already has Corepack shims, and a normal install stops on `EEXIST` for `yarn.cmd`. The job runs the commands above. It does not publish, release, or upload artifacts, and it does not read secrets.
 
 The actions are pinned to commits:
 
