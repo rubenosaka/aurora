@@ -28,7 +28,16 @@ jobs:
           package-manager-cache: false
 
       - name: Activate pnpm
-        run: npm install -g corepack@0.36.0 --force && corepack enable && corepack prepare pnpm@12.11.2 --activate
+        shell: pwsh
+        run: |
+          npm install -g corepack@0.36.0 --force
+          $prefix = (npm prefix -g).Trim()
+          Add-Content -Path $env:GITHUB_PATH -Value $prefix
+          $corepack = Join-Path $prefix 'corepack.cmd'
+          & $corepack --version
+          & $corepack enable
+          & $corepack prepare pnpm@12.11.2 --activate
+          & (Join-Path $prefix 'pnpm.cmd') --version
 
       - name: Install
         run: pnpm install --frozen-lockfile
