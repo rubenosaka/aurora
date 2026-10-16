@@ -71,14 +71,14 @@ Prettier uses single quotes, semicolons, no trailing commas, width 100, CRLF, an
 
 ## GitHub Actions
 
-`.github/workflows/quality.yml` runs on `ubuntu-latest` for `push` to `main` and for pull requests. `permissions` is `contents: read`. Node is 22.13.0. pnpm 12.11.2 is activated with Corepack 0.36.0. The job runs the commands above. It does not publish, release, or upload artifacts, and it does not read secrets.
+`.github/workflows/quality.yml` runs on `ubuntu-latest` for `push` to `main` and for pull requests. `permissions` is `contents: read`. Node is 22.13.0. `actions/setup-node` sets `package-manager-cache` to false, so it does not look for `pnpm` before the next step installs it. pnpm 12.11.2 is activated afterwards with Corepack 0.36.0. The job runs the commands above. It does not publish, release, or upload artifacts, and it does not read secrets.
 
 The actions are pinned to commits:
 
 - `actions/checkout` at `fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09` (tag `v5`)
 - `actions/setup-node` at `a0853c24544627f65ddf259abe73b1d18a591444` (tag `v5`)
 
-The remote repository is empty. This file was checked locally. GitHub Actions has not run it.
+The first run, on commit `4d32276`, failed in Setup Node.js because `package-manager-cache` defaulted to true and `pnpm` was not on `PATH` yet.
 
 ## Verification
 
@@ -118,4 +118,4 @@ ESLint's TypeScript program does not understand Vue single-file components. A mo
 
 ## Remaining risks
 
-GitHub has not executed the workflow. happy-dom does not prove painted focus rings or the 880px sidebar. `app-info.ts` still has unnamed branches below 100 percent; they are above the 80 percent gate. Node's glob support is experimental.
+happy-dom does not prove painted focus rings or the 880px sidebar. `app-info.ts` still has unnamed branches below 100 percent; they are above the 80 percent gate. Node's glob support is experimental.

@@ -116,14 +116,14 @@ There was no existing Aurora shortcut. A silent install used `C:\rga\aurora-inst
 
 ## GitHub Actions
 
-`.github/workflows/package.yml` runs on `windows-latest` for `push` to `main` and for pull requests. `permissions` is `contents: read`. `CSC_IDENTITY_AUTO_DISCOVERY` is false. The job runs `pnpm package` and `pnpm check:package`. It does not sign, publish, release, or upload artifacts.
+`.github/workflows/package.yml` runs on `windows-latest` for `push` to `main` and for pull requests. `permissions` is `contents: read`. `CSC_IDENTITY_AUTO_DISCOVERY` is false. `actions/setup-node` sets `package-manager-cache` to false, so it does not look for `pnpm` before Corepack installs it. The job runs `pnpm package` and `pnpm check:package`. It does not sign, publish, release, or upload artifacts.
 
 The actions use the same commits as the quality workflow:
 
 - `actions/checkout` at `fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09`
 - `actions/setup-node` at `a0853c24544627f65ddf259abe73b1d18a591444`
 
-This file was checked locally. GitHub Actions has not run it. The remote repository is empty, and this directory is not a git repository. The icon check can now pass locally.
+The first run failed in Setup Node.js with the same missing `pnpm` error as the quality workflow, before packaging started. The icon check can pass locally.
 
 ## Repository audit
 
