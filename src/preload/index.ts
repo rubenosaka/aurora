@@ -3,5 +3,5 @@ import { createAuroraApi } from './aurora-api.ts';
 
 contextBridge.exposeInMainWorld(
   'aurora',
-  createAuroraApi((channel) => ipcRenderer.invoke(channel))
+  createAuroraApi((channel, ...args) => ipcRenderer.invoke(channel, ...args))
 );

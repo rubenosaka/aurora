@@ -4,6 +4,7 @@ import {
   dialog,
   ipcMain,
   safeStorage,
+  shell,
   type IpcMainInvokeEvent
 } from 'electron';
 import { mkdirSync } from 'node:fs';
@@ -17,10 +18,13 @@ import { createAuroraWindow } from './aurora-window.ts';
 import { openAuroraDatabase } from './persistence/database.ts';
 import { type SecretCipher, createSafeStorageCipher } from './persistence/safe-storage-cipher.ts';
 import { openApplicationDatabase, persistenceStartupMessage } from './persistence/startup.ts';
+import { attachGoogleIpc } from './google-ipc.ts';
+import { createGoogleAccountService, type GoogleAccountService } from './oauth/google-accounts.ts';
 
 let mainWindow: BrowserWindow | null = null;
 let applicationDatabase: DatabaseSync | null = null;
 let credentialCipher: SecretCipher | null = null;
+let googleAccounts: GoogleAccountService | null = null;
 
 function closePersistence(): void {
   const database = applicationDatabase;
@@ -75,6 +79,8 @@ function createWindow(): void {
 registerAppInfoHandler();
 
 app.on('will-quit', () => {
+  googleAccounts?.shutdown();
+  googleAccounts = null;
   closePersistence();
 });
 
@@ -90,6 +96,21 @@ void app.whenReady().then(() => {
       openDatabase: (filePath) => openAuroraDatabase(filePath)
     });
     credentialCipher = createSafeStorageCipher(safeStorage);
+    const database = applicationDatabase;
+    const cipher = credentialCipher;
+    googleAccounts = createGoogleAccountService({
+      database,
+      cipher,
+      fetchImpl: globalThis.fetch.bind(globalThis),
+      openExternal: (url) => shell.openExternal(url)
+    });
+    attachGoogleIpc(
+      (channel, listener) => {
+        ipcMain.handle(channel, listener);
+      },
+      senderSnapshot,
+      googleAccounts
+    );
   } catch (error) {
     dialog.showErrorBox('Aurora', persistenceStartupMessage(error));
     app.quit();

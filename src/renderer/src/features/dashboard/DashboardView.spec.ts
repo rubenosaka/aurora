@@ -1,12 +1,25 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { describe, expect, it } from 'vitest';
 import { AuroraIpcError, type AppInfo, type IpcResult } from '../../../../shared/app-info.ts';
+import { type GoogleBridge } from '../../../../shared/google-accounts.ts';
 import DashboardView from './DashboardView.vue';
 
 const info: AppInfo = { name: 'aurora', version: '0.0.0', platform: 'win32' };
 
+function google(): GoogleBridge {
+  return {
+    getClientId: async () => ({ ok: false, error: { code: 'internal' } }),
+    saveClientId: async () => ({ ok: false, error: { code: 'internal' } }),
+    listAccounts: async () => ({ ok: false, error: { code: 'internal' } }),
+    connect: async () => ({ ok: false, error: { code: 'internal' } }),
+    reconnect: async () => ({ ok: false, error: { code: 'internal' } }),
+    cancel: async () => ({ ok: false, error: { code: 'internal' } }),
+    disconnect: async () => ({ ok: false, error: { code: 'internal' } })
+  };
+}
+
 function bridge(getInfo: () => Promise<IpcResult<AppInfo>>): void {
-  window.aurora = { app: { getInfo } };
+  window.aurora = { app: { getInfo }, google: google() };
 }
 
 describe('DashboardView', () => {

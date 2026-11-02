@@ -160,6 +160,13 @@ export function saveClientSecret(
   );
 }
 
+export function hasClientSecret(database: DatabaseSync, oauthClientId: string): boolean {
+  const row = database
+    .prepare(`SELECT id FROM credential_secrets WHERE oauth_client_id = ? AND kind = ?`)
+    .get(requireUuid(oauthClientId), clientCredentialKind);
+  return row !== undefined;
+}
+
 export function readClientSecret(
   database: DatabaseSync,
   cipher: SecretCipher,

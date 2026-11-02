@@ -1,3 +1,5 @@
+import { type GoogleApi, type GoogleBridge } from './google-accounts.ts';
+
 export const appInfoChannel = 'app:get-info';
 
 export const appPlatforms = [
@@ -101,10 +103,12 @@ export interface AuroraBridge {
   app: {
     getInfo(): Promise<IpcResult<AppInfo>>;
   };
+  google: GoogleBridge;
 }
 
 export interface AuroraApi {
   app: {
     getInfo(): Promise<AppInfo>;
   };
+  google: GoogleApi;
 }

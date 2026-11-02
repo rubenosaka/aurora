@@ -5,10 +5,37 @@ import {
   type IpcResult,
   type AppInfo
 } from '../shared/app-info.ts';
+import {
+  type GoogleResult,
+  googleAccountsCancelChannel,
+  googleAccountsConnectChannel,
+  googleAccountsDisconnectChannel,
+  googleAccountsListChannel,
+  googleAccountsReconnectChannel,
+  googleClientGetChannel,
+  googleClientSaveChannel,
+  parseGoogleAccountList,
+  parseGoogleCancelResult,
+  parseGoogleClientSaved,
+  parseGoogleClientState,
+  parseGoogleDisconnectResult,
+  parseGoogleResult,
+  isGoogleAccountSummary,
+  type GoogleAccountList,
+  type GoogleAccountSummary,
+  type GoogleCancelResult,
+  type GoogleClientSaved,
+  type GoogleClientState,
+  type GoogleDisconnectResult
+} from '../shared/google-accounts.ts';
 
-export type AppInfoInvoke = (channel: typeof appInfoChannel) => Promise<unknown>;
+export type AuroraInvoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
 
-export function createAuroraApi(invoke: AppInfoInvoke): AuroraBridge {
+function internalGoogle<T>(): GoogleResult<T> {
+  return { ok: false, error: { code: 'internal' } };
+}
+
+export function createAuroraApi(invoke: AuroraInvoke): AuroraBridge {
   return Object.freeze({
     app: Object.freeze({
       getInfo(): Promise<IpcResult<AppInfo>> {
@@ -16,6 +43,59 @@ export function createAuroraApi(invoke: AppInfoInvoke): AuroraBridge {
           .then(() => invoke(appInfoChannel))
           .then((raw) => parseIpcResult(raw))
           .catch(() => ({ ok: false, error: { code: 'internal' } }));
+      }
+    }),
+    google: Object.freeze({
+      getClientId(): Promise<GoogleResult<GoogleClientState>> {
+        return Promise.resolve()
+          .then(() => invoke(googleClientGetChannel))
+          .then((raw) => parseGoogleResult(raw, parseGoogleClientState))
+          .catch(() => internalGoogle());
+      },
+      saveClientId(
+        clientId: string,
+        clientSecret: string | null
+      ): Promise<GoogleResult<GoogleClientSaved>> {
+        return Promise.resolve()
+          .then(() => invoke(googleClientSaveChannel, { clientId, clientSecret }))
+          .then((raw) => parseGoogleResult(raw, parseGoogleClientSaved))
+          .catch(() => internalGoogle());
+      },
+      listAccounts(): Promise<GoogleResult<GoogleAccountList>> {
+        return Promise.resolve()
+          .then(() => invoke(googleAccountsListChannel))
+          .then((raw) => parseGoogleResult(raw, parseGoogleAccountList))
+          .catch(() => internalGoogle());
+      },
+      connect(): Promise<GoogleResult<GoogleAccountSummary>> {
+        return Promise.resolve()
+          .then(() => invoke(googleAccountsConnectChannel))
+          .then((raw) =>
+            parseGoogleResult(raw, (value) => (isGoogleAccountSummary(value) ? value : null))
+          )
+          .catch(() => internalGoogle());
+      },
+      reconnect(accountId: string): Promise<GoogleResult<GoogleAccountSummary>> {
+        return Promise.resolve()
+          .then(() => invoke(googleAccountsReconnectChannel, { accountId }))
+          .then((raw) =>
+            parseGoogleResult(raw, (value): GoogleAccountSummary | null =>
+              isGoogleAccountSummary(value) ? value : null
+            )
+          )
+          .catch(() => internalGoogle());
+      },
+      cancel(): Promise<GoogleResult<GoogleCancelResult>> {
+        return Promise.resolve()
+          .then(() => invoke(googleAccountsCancelChannel))
+          .then((raw) => parseGoogleResult(raw, parseGoogleCancelResult))
+          .catch(() => internalGoogle());
+      },
+      disconnect(accountId: string): Promise<GoogleResult<GoogleDisconnectResult>> {
+        return Promise.resolve()
+          .then(() => invoke(googleAccountsDisconnectChannel, { accountId }))
+          .then((raw) => parseGoogleResult(raw, parseGoogleDisconnectResult))
+          .catch(() => internalGoogle());
       }
     })
   });

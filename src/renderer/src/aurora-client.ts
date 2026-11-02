@@ -1,9 +1,20 @@
 import {
-  AuroraIpcError,
   unwrapAppInfo,
   type AuroraApi,
-  type AuroraBridge
+  type AuroraBridge,
+  AuroraIpcError
 } from '../../shared/app-info.ts';
+import {
+  GoogleIpcError,
+  unwrapGoogleResult,
+  isGoogleAccountSummary,
+  parseGoogleAccountList,
+  parseGoogleCancelResult,
+  parseGoogleClientSaved,
+  parseGoogleClientState,
+  parseGoogleDisconnectResult,
+  type GoogleAccountSummary
+} from '../../shared/google-accounts.ts';
 
 export function createRendererAppApi(bridge: AuroraBridge): AuroraApi {
   return Object.freeze({
@@ -16,6 +27,76 @@ export function createRendererAppApi(bridge: AuroraBridge): AuroraApi {
           throw new AuroraIpcError('internal');
         }
         return unwrapAppInfo(raw);
+      }
+    }),
+    google: Object.freeze({
+      async getClientId() {
+        try {
+          return unwrapGoogleResult(await bridge.google.getClientId(), parseGoogleClientState);
+        } catch (error) {
+          if (error instanceof GoogleIpcError) throw error;
+          throw new GoogleIpcError('internal');
+        }
+      },
+      async saveClientId(clientId: string, clientSecret: string | null) {
+        try {
+          return unwrapGoogleResult(
+            await bridge.google.saveClientId(clientId, clientSecret),
+            parseGoogleClientSaved
+          );
+        } catch (error) {
+          if (error instanceof GoogleIpcError) throw error;
+          throw new GoogleIpcError('internal');
+        }
+      },
+      async listAccounts() {
+        try {
+          return unwrapGoogleResult(await bridge.google.listAccounts(), parseGoogleAccountList);
+        } catch (error) {
+          if (error instanceof GoogleIpcError) throw error;
+          throw new GoogleIpcError('internal');
+        }
+      },
+      async connect() {
+        try {
+          return unwrapGoogleResult(
+            await bridge.google.connect(),
+            (value): GoogleAccountSummary | null => (isGoogleAccountSummary(value) ? value : null)
+          );
+        } catch (error) {
+          if (error instanceof GoogleIpcError) throw error;
+          throw new GoogleIpcError('internal');
+        }
+      },
+      async reconnect(accountId: string) {
+        try {
+          return unwrapGoogleResult(
+            await bridge.google.reconnect(accountId),
+            (value): GoogleAccountSummary | null => (isGoogleAccountSummary(value) ? value : null)
+          );
+        } catch (error) {
+          if (error instanceof GoogleIpcError) throw error;
+          throw new GoogleIpcError('internal');
+        }
+      },
+      async cancel() {
+        try {
+          return unwrapGoogleResult(await bridge.google.cancel(), parseGoogleCancelResult);
+        } catch (error) {
+          if (error instanceof GoogleIpcError) throw error;
+          throw new GoogleIpcError('internal');
+        }
+      },
+      async disconnect(accountId: string) {
+        try {
+          return unwrapGoogleResult(
+            await bridge.google.disconnect(accountId),
+            parseGoogleDisconnectResult
+          );
+        } catch (error) {
+          if (error instanceof GoogleIpcError) throw error;
+          throw new GoogleIpcError('internal');
+        }
       }
     })
   });
