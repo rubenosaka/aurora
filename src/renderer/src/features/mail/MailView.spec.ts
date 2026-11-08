@@ -2,7 +2,18 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { describe, expect, it } from 'vitest';
 import { GmailIpcError, type GmailApi, type GmailThreadList } from '../../../../shared/gmail.ts';
 import { type GoogleAccountSummary, type GoogleApi } from '../../../../shared/google-accounts.ts';
+import { createAppRouter } from '../../app/router.ts';
 import MailView from './MailView.vue';
+
+function mountMail(options?: Parameters<typeof mount>[1]) {
+  return mount(MailView, {
+    ...options,
+    global: {
+      ...options?.global,
+      plugins: [createAppRouter(), ...(options?.global?.plugins ?? [])]
+    }
+  });
+}
 
 const ada: GoogleAccountSummary = {
   id: '00000000-0000-4000-8000-000000000001',
@@ -31,6 +42,8 @@ function mailActions(): Pick<
   | 'removeLabel'
   | 'starMessage'
   | 'unstarMessage'
+  | 'composeSeed'
+  | 'sendMessage'
 > {
   return {
     markRead: async () => ({ threadId: 'threadsame', unread: false }),
@@ -41,7 +54,13 @@ function mailActions(): Pick<
     addLabel: async () => ({ threadId: 'threadsame', labelId: 'Label_1' }),
     removeLabel: async () => ({ threadId: 'threadsame', labelId: 'Label_1' }),
     starMessage: async () => ({ threadId: 'threadsame', messageId: 'messageone', starred: true }),
-    unstarMessage: async () => ({ threadId: 'threadsame', messageId: 'messageone', starred: false })
+    unstarMessage: async () => ({
+      threadId: 'threadsame',
+      messageId: 'messageone',
+      starred: false
+    }),
+    composeSeed: async () => ({ to: ['bob@example.com'], cc: [], subject: 'Re: Hello' }),
+    sendMessage: async () => ({ id: 'messagesent', threadId: 'threadsame' })
   };
 }
 
@@ -136,7 +155,7 @@ describe('MailView', () => {
       cancel: async () => ({ cancelled: true }),
       disconnect: async () => ({ outcome: 'revoked' })
     };
-    const wrapper = mount(MailView, {
+    const wrapper = mountMail({
       props: { googleApi, gmailApi },
       global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } }
     });
@@ -176,7 +195,7 @@ describe('MailView', () => {
       cancel: async () => ({ cancelled: true }),
       disconnect: async () => ({ outcome: 'revoked' })
     };
-    const wrapper = mount(MailView, {
+    const wrapper = mountMail({
       props: { googleApi, gmailApi },
       global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } }
     });
@@ -235,7 +254,7 @@ describe('MailView', () => {
       readThread: async () => ({ id: 'threadsame', messages: [] }),
       openLink: async () => ({ opened: true })
     };
-    const wrapper = mount(MailView, {
+    const wrapper = mountMail({
       props: { googleApi: accountsApi([ada]), gmailApi },
       global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } }
     });
@@ -286,7 +305,7 @@ describe('MailView', () => {
       readThread: async () => ({ id: 'threadsame', messages: [] }),
       openLink: async () => ({ opened: true })
     };
-    const wrapper = mount(MailView, {
+    const wrapper = mountMail({
       props: { googleApi: accountsApi([ada]), gmailApi }
     });
     await flushPromises();
@@ -333,7 +352,7 @@ describe('MailView', () => {
       readThread: async () => ({ id: 'threadsame', messages: [] }),
       openLink: async () => ({ opened: true })
     };
-    const wrapper = mount(MailView, {
+    const wrapper = mountMail({
       props: { googleApi: accountsApi([ada]), gmailApi }
     });
     await flushPromises();
@@ -389,7 +408,7 @@ describe('MailView', () => {
       }),
       openLink: async () => ({ opened: true })
     };
-    const wrapper = mount(MailView, {
+    const wrapper = mountMail({
       props: { googleApi: accountsApi([ada]), gmailApi },
       global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } }
     });
@@ -460,7 +479,7 @@ describe('MailView', () => {
         return { threadId: 'threadsame', messageId: 'messageone', starred: true };
       }
     };
-    const wrapper = mount(MailView, {
+    const wrapper = mountMail({
       props: { googleApi: accountsApi([ada]), gmailApi },
       global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } }
     });
@@ -479,7 +498,7 @@ describe('MailView', () => {
     await wrapper.get('[aria-label="Archive"]').trigger('click');
     await flushPromises();
     expect(wrapper.find('.mail-row').exists()).toBe(false);
-    const listed = mount(MailView, {
+    const listed = mountMail({
       props: { googleApi: accountsApi([ada]), gmailApi },
       global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } }
     });
@@ -493,7 +512,7 @@ describe('MailView', () => {
     await listed.get('[aria-label="Star"]').trigger('click');
     await flushPromises();
     expect(calls).toContain('star');
-    const readonly = mount(MailView, {
+    const readonly = mountMail({
       props: {
         googleApi: accountsApi([{ ...ada, canModifyMail: false }]),
         gmailApi
@@ -533,7 +552,7 @@ describe('MailView', () => {
       readThread: async () => ({ id: 'threadsame', messages: [] }),
       openLink: async () => ({ opened: true })
     };
-    const wrapper = mount(MailView, {
+    const wrapper = mountMail({
       props: { googleApi: accountsApi([ada]), gmailApi },
       global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } }
     });
@@ -549,5 +568,184 @@ describe('MailView', () => {
     await refresh?.trigger('click');
     await flushPromises();
     expect(queries.at(-1)).toBe('from:ada@example.com');
+  });
+
+  it('sends once, keeps the text when the outcome is unknown, and asks before discard', async () => {
+    let sends = 0;
+    const queries: Array<string | null> = [];
+    let releaseSend: (() => void) | undefined;
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => ({
+        labels: [
+          { id: 'INBOX', name: 'INBOX', type: 'system', unreadCount: 1 },
+          { id: 'SENT', name: 'SENT', type: 'system', unreadCount: 0 }
+        ]
+      }),
+      listThreads: async (query) => {
+        queries.push(query.labelId);
+        return { threads: [], nextPageToken: null };
+      },
+      readThread: async () => ({ id: 'threadsame', messages: [] }),
+      openLink: async () => ({ opened: true }),
+      sendMessage: () => {
+        sends += 1;
+        if (sends === 1) {
+          return new Promise(() => undefined);
+        }
+        releaseSend = () => undefined;
+        return Promise.reject(new GmailIpcError('send-unconfirmed'));
+      }
+    };
+    const wrapper = mountMail({
+      props: { googleApi: accountsApi([ada, grace]), gmailApi }
+    });
+    await flushPromises();
+    await wrapper.get('button').trigger('click');
+    const composer = wrapper.get('[aria-labelledby="compose-title"]');
+    expect(composer.text()).toContain('ada@example.com');
+    await composer.get('[aria-label="To"]').setValue('bob@example.com');
+    await composer.get('[aria-label="To"]').trigger('keydown', { key: 'Enter' });
+    await composer.get('[aria-label="Message"]').setValue('Hello');
+    await composer
+      .get('[aria-label="Message"]')
+      .trigger('keydown', { key: 'Enter', ctrlKey: true });
+    composer.get('button[aria-busy="true"], button:disabled');
+    const send = composer.findAll('button').find((button) => button.text().includes('Send'));
+    await send?.trigger('click');
+    expect(sends).toBe(1);
+    releaseSend?.();
+    wrapper.unmount();
+
+    const failed: GmailApi = {
+      ...gmailApi,
+      sendMessage: async () => {
+        throw new GmailIpcError('send-unconfirmed');
+      }
+    };
+    const again = mountMail({ props: { googleApi: accountsApi([ada, grace]), gmailApi: failed } });
+    await flushPromises();
+    await again.get('button').trigger('click');
+    const dialog = again.get('[aria-labelledby="compose-title"]');
+    await dialog.get('[aria-label="To"]').setValue('bob@example.com');
+    await dialog.get('[aria-label="To"]').trigger('keydown', { key: 'Enter' });
+    await dialog.get('[aria-label="Message"]').setValue('Keep this');
+    await dialog
+      .findAll('button')
+      .find((button) => button.text().includes('Send'))
+      ?.trigger('click');
+    await flushPromises();
+    expect(dialog.get('[aria-label="Message"]').element).toHaveProperty('value', 'Keep this');
+    expect(dialog.text()).toContain('Check Sent');
+    const check = dialog.findAll('button').find((button) => button.text() === 'Check Sent');
+    await check?.trigger('click');
+    await flushPromises();
+    expect(again.find('[aria-labelledby="compose-title"]').exists()).toBe(true);
+    expect(queries).toContain('SENT');
+    await dialog
+      .findAll('button')
+      .find((button) => button.text() === 'Close')
+      ?.trigger('click');
+    expect(again.text()).toContain('Discard this message?');
+    await again
+      .findAll('button')
+      .find((button) => button.text() === 'Keep editing')
+      ?.trigger('click');
+    expect(again.get('[aria-label="Message"]').element).toHaveProperty('value', 'Keep this');
+    await again
+      .findAll('button')
+      .find((button) => button.text() === 'Close')
+      ?.trigger('click');
+    await again
+      .findAll('button')
+      .find((button) => button.text() === 'Discard')
+      ?.trigger('click');
+    expect(again.find('[aria-labelledby="compose-title"]').exists()).toBe(false);
+
+    const switched = mountMail({
+      props: { googleApi: accountsApi([ada, grace]), gmailApi: failed }
+    });
+    await flushPromises();
+    await switched.get('button').trigger('click');
+    await switched.get('[aria-label="Message"]').setValue('Draft');
+    await switched.get('[aria-label="Google account"]').setValue(grace.id);
+    expect(switched.text()).toContain('Discard this message?');
+    expect(switched.get('[aria-label="Google account"]').element).toHaveProperty('value', ada.id);
+    await switched
+      .findAll('button')
+      .find((button) => button.text() === 'Keep editing')
+      ?.trigger('click');
+    expect(switched.get('[aria-label="Message"]').element).toHaveProperty('value', 'Draft');
+  });
+
+  it('reaches reply actions from the keyboard and does not open compose for a read-only account', async () => {
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => labels,
+      listThreads: async () => ({
+        threads: [
+          {
+            id: 'threadsame',
+            subject: 'Hello',
+            from: 'Ada',
+            date: '2026-11-02T12:00:00.000Z',
+            snippet: 'Hi',
+            unread: false,
+            starred: false
+          }
+        ],
+        nextPageToken: null
+      }),
+      readThread: async () => ({
+        id: 'threadsame',
+        messages: [
+          {
+            id: 'messageone',
+            from: 'Bob <bob@example.com>',
+            to: 'ada@example.com',
+            cc: null,
+            bcc: null,
+            subject: 'Hello',
+            date: '2026-11-02T12:00:00.000Z',
+            unread: false,
+            starred: false,
+            labelIds: ['INBOX'],
+            text: 'Line',
+            html: null,
+            imagesOmitted: false,
+            attachments: []
+          }
+        ]
+      }),
+      openLink: async () => ({ opened: true })
+    };
+    const wrapper = mountMail({ props: { googleApi: accountsApi([ada]), gmailApi } });
+    await flushPromises();
+    await wrapper.get('.mail-row').trigger('click');
+    await flushPromises();
+    expect(wrapper.get('button').text()).toContain('Back');
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'Reply')
+      ?.trigger('click');
+    await flushPromises();
+    const composer = wrapper.get('[aria-labelledby="compose-title"]');
+    expect(composer.text()).toContain('Reply');
+    expect(composer.text()).toContain('bob@example.com');
+    expect(composer.get('[aria-label="Message"]').element).toHaveProperty(
+      'value',
+      expect.stringContaining('> Line')
+    );
+    expect(composer.find('textarea').exists()).toBe(true);
+    const readonly = mountMail({
+      props: {
+        googleApi: accountsApi([{ ...ada, canModifyMail: false }]),
+        gmailApi
+      }
+    });
+    await flushPromises();
+    await readonly.get('button').trigger('click');
+    expect(readonly.find('[aria-labelledby="compose-title"]').exists()).toBe(false);
+    expect(readonly.text()).toContain('Reconnect this Google account before changing mail.');
   });
 });

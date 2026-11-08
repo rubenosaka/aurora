@@ -364,6 +364,46 @@
   transform: translate(-50%, -50%);
 }
 
+.mail-composer {
+  z-index: 30;
+  width: min(560px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  overflow: auto;
+}
+
+.compose-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.compose-addresses {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.compose-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.compose-body {
+  height: auto;
+  min-height: 180px;
+  padding: 12px;
+  resize: vertical;
+}
+
+.compose-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .conversation-date {
   flex: none;
   color: var(--aurora-muted);

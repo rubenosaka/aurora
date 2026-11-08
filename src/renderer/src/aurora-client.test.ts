@@ -30,6 +30,8 @@ function pendingMail(): Pick<
   | 'removeLabel'
   | 'starMessage'
   | 'unstarMessage'
+  | 'composeSeed'
+  | 'sendMessage'
 > {
   const denied = async (): Promise<{ ok: false; error: { code: 'internal' } }> => ({
     ok: false,
@@ -44,7 +46,9 @@ function pendingMail(): Pick<
     addLabel: denied,
     removeLabel: denied,
     starMessage: denied,
-    unstarMessage: denied
+    unstarMessage: denied,
+    composeSeed: denied,
+    sendMessage: denied
   };
 }
 

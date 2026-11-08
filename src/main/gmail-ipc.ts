@@ -6,12 +6,14 @@ import { isGoogleAccountId } from '../shared/google-accounts.ts';
 import {
   gmailAddLabelChannel,
   gmailArchiveThreadChannel,
+  gmailComposeSeedChannel,
   gmailChannels,
   gmailLabelsChannel,
   gmailMarkReadChannel,
   gmailMarkUnreadChannel,
   gmailOpenLinkChannel,
   gmailRemoveLabelChannel,
+  gmailSendMessageChannel,
   gmailStarMessageChannel,
   gmailThreadChannel,
   gmailThreadsChannel,
@@ -31,6 +33,12 @@ import {
   type GmailErrorCode,
   type GmailResult
 } from '../shared/gmail.ts';
+import {
+  parseComposeMessage,
+  parseComposeSeed,
+  parseComposeSeedQuery,
+  parseComposeSent
+} from '../shared/mail-compose.ts';
 
 type GmailIpcValue =
   | Awaited<ReturnType<GmailReader['listLabels']>>
@@ -40,7 +48,9 @@ type GmailIpcValue =
   | Awaited<ReturnType<GmailReader['markRead']>>
   | Awaited<ReturnType<GmailReader['archiveThread']>>
   | Awaited<ReturnType<GmailReader['addLabel']>>
-  | Awaited<ReturnType<GmailReader['starMessage']>>;
+  | Awaited<ReturnType<GmailReader['starMessage']>>
+  | Awaited<ReturnType<GmailReader['composeSeed']>>
+  | Awaited<ReturnType<GmailReader['sendMessage']>>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -206,6 +216,26 @@ export async function handleGmailChannel(
           ? await reader.starMessage(input.accountId, input.threadId, input.messageId)
           : await reader.unstarMessage(input.accountId, input.threadId, input.messageId);
       if (parseGmailStarChanged(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailComposeSeedChannel) {
+      if (args.length !== 1 || parseComposeSeedQuery(args[0]) === null) {
+        return rejected('invalid-request');
+      }
+      const query = parseComposeSeedQuery(args[0]);
+      if (query === null) return rejected('invalid-request');
+      const value = await reader.composeSeed(query);
+      if (parseComposeSeed(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailSendMessageChannel) {
+      if (args.length !== 1 || parseComposeMessage(args[0]) === null) {
+        return rejected('invalid-request');
+      }
+      const message = parseComposeMessage(args[0]);
+      if (message === null) return rejected('invalid-request');
+      const value = await reader.sendMessage(message);
+      if (parseComposeSent(value) === null) return rejected('invalid-response');
       return { ok: true, value };
     }
     if (channel === gmailOpenLinkChannel) {

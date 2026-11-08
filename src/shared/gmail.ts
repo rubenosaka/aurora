@@ -1,4 +1,10 @@
 import { isGoogleAccountId } from './google-accounts.ts';
+import {
+  type ComposeMessage,
+  type ComposeSeed,
+  type ComposeSeedQuery,
+  type ComposeSent
+} from './mail-compose.ts';
 
 export const gmailLabelsChannel = 'gmail:labels';
 export const gmailThreadsChannel = 'gmail:threads';
@@ -13,6 +19,8 @@ export const gmailAddLabelChannel = 'gmail:add-label';
 export const gmailRemoveLabelChannel = 'gmail:remove-label';
 export const gmailStarMessageChannel = 'gmail:star-message';
 export const gmailUnstarMessageChannel = 'gmail:unstar-message';
+export const gmailComposeSeedChannel = 'gmail:compose-seed';
+export const gmailSendMessageChannel = 'gmail:send-message';
 
 export const gmailChannels = [
   gmailLabelsChannel,
@@ -27,7 +35,9 @@ export const gmailChannels = [
   gmailAddLabelChannel,
   gmailRemoveLabelChannel,
   gmailStarMessageChannel,
-  gmailUnstarMessageChannel
+  gmailUnstarMessageChannel,
+  gmailComposeSeedChannel,
+  gmailSendMessageChannel
 ] as const;
 
 export type GmailChannel = (typeof gmailChannels)[number];
@@ -47,6 +57,7 @@ export const gmailErrorCodes = [
   'permission-denied',
   'insufficient-scope',
   'gmail-rejected',
+  'send-unconfirmed',
   'internal'
 ] as const;
 
@@ -70,6 +81,8 @@ const messages: Record<GmailErrorCode, string> = {
   'permission-denied': 'Gmail did not allow this request.',
   'insufficient-scope': 'Reconnect this Google account before changing mail.',
   'gmail-rejected': 'Gmail refused this request.',
+  'send-unconfirmed':
+    'Aurora could not confirm whether Gmail sent this message. Check Sent before sending it again.',
   internal: 'Request failed.'
 };
 
@@ -507,6 +520,8 @@ export interface GmailBridge {
     threadId: string,
     messageId: string
   ): Promise<GmailResult<GmailStarChanged>>;
+  composeSeed(query: ComposeSeedQuery): Promise<GmailResult<ComposeSeed>>;
+  sendMessage(message: ComposeMessage): Promise<GmailResult<ComposeSent>>;
 }
 
 export interface GmailApi {
@@ -523,4 +538,6 @@ export interface GmailApi {
   removeLabel(accountId: string, threadId: string, labelId: string): Promise<GmailLabelChanged>;
   starMessage(accountId: string, threadId: string, messageId: string): Promise<GmailStarChanged>;
   unstarMessage(accountId: string, threadId: string, messageId: string): Promise<GmailStarChanged>;
+  composeSeed(query: ComposeSeedQuery): Promise<ComposeSeed>;
+  sendMessage(message: ComposeMessage): Promise<ComposeSent>;
 }

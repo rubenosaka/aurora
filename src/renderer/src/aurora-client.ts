@@ -18,6 +18,12 @@ import {
   type GmailThreadQuery
 } from '../../shared/gmail.ts';
 import {
+  parseComposeSeed,
+  parseComposeSent,
+  type ComposeMessage,
+  type ComposeSeedQuery
+} from '../../shared/mail-compose.ts';
+import {
   GoogleIpcError,
   unwrapGoogleResult,
   isGoogleAccountSummary,
@@ -193,6 +199,12 @@ export function createRendererAppApi(bridge: AuroraBridge): AuroraApi {
           bridge.gmail.unstarMessage(accountId, threadId, messageId),
           parseGmailStarChanged
         );
+      },
+      composeSeed(query: ComposeSeedQuery) {
+        return readGmail(bridge.gmail.composeSeed(query), parseComposeSeed);
+      },
+      sendMessage(message: ComposeMessage) {
+        return readGmail(bridge.gmail.sendMessage(message), parseComposeSent);
       }
     })
   });

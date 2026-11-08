@@ -12,6 +12,7 @@ export const gmailServiceCodes = [
   'permission-denied',
   'insufficient-scope',
   'gmail-rejected',
+  'send-unconfirmed',
   'internal'
 ] as const;
 
@@ -31,6 +32,8 @@ const sentences: Record<GmailServiceCode, string> = {
   'permission-denied': 'Gmail did not allow this request.',
   'insufficient-scope': 'Reconnect this Google account before changing mail.',
   'gmail-rejected': 'Gmail refused this request.',
+  'send-unconfirmed':
+    'Aurora could not confirm whether Gmail sent this message. Check Sent before sending it again.',
   internal: 'Request failed.'
 };
 

@@ -8,6 +8,7 @@ import { type SenderSnapshot } from './trusted-sender.ts';
 import {
   gmailLabelsChannel,
   gmailOpenLinkChannel,
+  gmailSendMessageChannel,
   gmailThreadChannel,
   gmailThreadsChannel
 } from '../shared/gmail.ts';
@@ -54,6 +55,8 @@ function reader(overrides: Partial<GmailReader> = {}): GmailReader {
       messageId: 'messageone',
       starred: false
     }),
+    composeSeed: async () => ({ to: [], cc: [], subject: '' }),
+    sendMessage: async () => ({ id: 'messagesent', threadId: null }),
     ...overrides
   };
 }
@@ -174,6 +177,40 @@ describe('gmail ipc', () => {
         reader({
           openLink: async () =>
             ({ opened: false }) as unknown as Awaited<ReturnType<GmailReader['openLink']>>
+        })
+      ),
+      { ok: false, error: { code: 'invalid-response' } }
+    );
+    const sent = {
+      accountId,
+      kind: 'new',
+      threadId: null,
+      messageId: null,
+      to: ['bob@example.com'],
+      cc: [],
+      bcc: [],
+      subject: 'Hello',
+      body: 'Hi'
+    };
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailSendMessageChannel,
+        sender(),
+        [{ ...sent, raw: 'nope' }],
+        reader()
+      ),
+      { ok: false, error: { code: 'invalid-request' } }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailSendMessageChannel,
+        sender(),
+        [sent],
+        reader({
+          sendMessage: async () =>
+            ({ id: 'sentone', threadId: null, access_token: 'access-a' }) as unknown as Awaited<
+              ReturnType<GmailReader['sendMessage']>
+            >
         })
       ),
       { ok: false, error: { code: 'invalid-response' } }

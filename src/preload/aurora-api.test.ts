@@ -42,7 +42,9 @@ describe('createAuroraApi', () => {
       'addLabel',
       'removeLabel',
       'starMessage',
-      'unstarMessage'
+      'unstarMessage',
+      'composeSeed',
+      'sendMessage'
     ]);
     assert.equal(Object.isFrozen(api), true);
     assert.equal(Object.isFrozen(api.app), true);

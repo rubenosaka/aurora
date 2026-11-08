@@ -6,20 +6,24 @@ import {
   ChevronsUpDown,
   File,
   Flag,
+  Forward,
   Inbox,
   Mail,
   MailOpen,
   PanelLeft,
   Paperclip,
+  Reply,
+  ReplyAll,
   RotateCcw,
   Search,
   Send,
+  SquarePen,
   Star,
   Tag,
   Trash2
 } from '@lucide/vue';
-import { computed, nextTick, onMounted, ref, watch, type Component } from 'vue';
-import { RouterLink } from 'vue-router';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Component } from 'vue';
+import { onBeforeRouteLeave, useRouter, RouterLink } from 'vue-router';
 import {
   GmailIpcError,
   gmailErrorMessage,
@@ -34,6 +38,12 @@ import {
   type GoogleAccountSummary,
   type GoogleApi
 } from '../../../../shared/google-accounts.ts';
+import {
+  forwardQuote,
+  isMailboxAddress,
+  replyQuote,
+  type ComposeSendKind
+} from '../../../../shared/mail-compose.ts';
 import { createRendererAppApi } from '../../aurora-client.ts';
 import StatusPanel from '../../components/StatusPanel.vue';
 import './mail.css';
@@ -48,7 +58,32 @@ const folderIcons: Record<string, Component> = {
   IMPORTANT: Flag
 };
 
+interface MailCompose {
+  generation: number;
+  accountId: string;
+  from: string;
+  kind: ComposeSendKind;
+  threadId: string | null;
+  messageId: string | null;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  toDraft: string;
+  ccDraft: string;
+  bccDraft: string;
+  showCc: boolean;
+  showBcc: boolean;
+  subject: string;
+  subjectLocked: boolean;
+  body: string;
+  baseline: string;
+  sending: boolean;
+  error: string;
+  unconfirmed: boolean;
+}
+
 const props = defineProps<{ googleApi?: GoogleApi; gmailApi?: GmailApi }>();
+const router = useRouter();
 const accounts = ref<GoogleAccountSummary[]>([]);
 const accountId = ref('');
 const labels = ref<GmailLabel[]>([]);
@@ -73,7 +108,14 @@ const labelsOpen = ref(false);
 const foldersExpanded = ref(false);
 const trashTarget = ref<string | null>(null);
 const cancelTrashButton = ref<HTMLButtonElement | null>(null);
+const compose = ref<MailCompose | null>(null);
+const composeStatus = ref('');
+const pendingDiscard = ref<(() => void) | null>(null);
+const composeToInput = ref<HTMLInputElement | null>(null);
+const composeBodyInput = ref<HTMLTextAreaElement | null>(null);
+const keepComposeButton = ref<HTMLButtonElement | null>(null);
 let generation = 0;
+let composeEpoch = 0;
 let trashOpener: HTMLElement | null = null;
 
 function google(): GoogleApi {
@@ -223,12 +265,20 @@ function chooseAccount(event: Event): void {
   const value = event.target instanceof HTMLSelectElement ? event.target.value : '';
   const account = accounts.value.find((item) => item.id === value);
   if (account === undefined || account.status !== 'connected' || value === accountId.value) return;
-  accountId.value = value;
-  searchText.value = '';
-  activeQuery.value = null;
-  labelId.value = 'INBOX';
-  resetPages();
-  void startList();
+  if (compose.value?.sending === true) return;
+  const apply = (): void => {
+    accountId.value = value;
+    searchText.value = '';
+    activeQuery.value = null;
+    labelId.value = 'INBOX';
+    resetPages();
+    void startList();
+  };
+  if (compose.value !== null) {
+    askDiscard(apply);
+    return;
+  }
+  apply();
 }
 
 function chooseLabel(id: string): void {
@@ -560,6 +610,362 @@ function changeStar(message: GmailMessage): void {
   );
 }
 
+function composeSnapshot(draft: MailCompose): string {
+  return JSON.stringify({
+    to: draft.to,
+    cc: draft.cc,
+    bcc: draft.bcc,
+    toDraft: draft.toDraft,
+    ccDraft: draft.ccDraft,
+    bccDraft: draft.bccDraft,
+    subject: draft.subject,
+    body: draft.body
+  });
+}
+
+function composeDirty(): boolean {
+  const draft = compose.value;
+  return draft !== null && composeSnapshot(draft) !== draft.baseline;
+}
+
+function warnBeforeUnload(event: BeforeUnloadEvent): void {
+  if (!composeDirty()) return;
+  event.preventDefault();
+  event.returnValue = '';
+}
+
+function composeTitle(kind: ComposeSendKind): string {
+  if (kind === 'reply') return 'Reply';
+  if (kind === 'reply-all') return 'Reply all';
+  if (kind === 'forward') return 'Forward';
+  return 'New message';
+}
+
+function beginCompose(draft: Omit<MailCompose, 'generation' | 'baseline'>): void {
+  composeEpoch += 1;
+  const next: MailCompose = { ...draft, generation: composeEpoch, baseline: '' };
+  next.baseline = composeSnapshot(next);
+  compose.value = next;
+  composeStatus.value = '';
+  pendingDiscard.value = null;
+  void nextTick(() => {
+    if (next.subjectLocked) composeBodyInput.value?.focus();
+    else composeToInput.value?.focus();
+  });
+}
+
+function askDiscard(next: () => void): void {
+  if (!composeDirty()) {
+    compose.value = null;
+    next();
+    return;
+  }
+  pendingDiscard.value = next;
+  void nextTick(() => keepComposeButton.value?.focus());
+}
+
+function keepCompose(): void {
+  pendingDiscard.value = null;
+}
+
+function discardCompose(): void {
+  const next = pendingDiscard.value;
+  pendingDiscard.value = null;
+  compose.value = null;
+  next?.();
+}
+
+function requestCloseCompose(): void {
+  if (compose.value?.sending === true) return;
+  askDiscard(() => undefined);
+}
+
+function requireMailChange(): boolean {
+  if (canChangeMail()) return true;
+  actionNotice.value = 'Reconnect this Google account before changing mail.';
+  return false;
+}
+
+function requestNewMessage(): void {
+  if (!requireMailChange()) return;
+  const account = selectedAccount.value;
+  if (account === undefined) return;
+  const open = (): void => {
+    beginCompose({
+      accountId: account.id,
+      from: account.email ?? '',
+      kind: 'new',
+      threadId: null,
+      messageId: null,
+      to: [],
+      cc: [],
+      bcc: [],
+      toDraft: '',
+      ccDraft: '',
+      bccDraft: '',
+      showCc: false,
+      showBcc: false,
+      subject: '',
+      subjectLocked: false,
+      body: '',
+      sending: false,
+      error: '',
+      unconfirmed: false
+    });
+  };
+  if (compose.value !== null) askDiscard(open);
+  else open();
+}
+
+function requestSeed(kind: 'reply' | 'reply-all' | 'forward', item: GmailMessage): void {
+  if (!requireMailChange()) return;
+  const account = selectedAccount.value;
+  const threadId = openId.value;
+  if (account === undefined || threadId === null) return;
+  const open = async (): Promise<void> => {
+    const captured = account.id;
+    try {
+      const seed = await gmail().composeSeed({
+        accountId: captured,
+        threadId,
+        messageId: item.id,
+        kind
+      });
+      if (accountId.value !== captured || openId.value !== threadId) return;
+      beginCompose({
+        accountId: captured,
+        from: account.email ?? '',
+        kind,
+        threadId,
+        messageId: item.id,
+        to: [...seed.to],
+        cc: [...seed.cc],
+        bcc: [],
+        toDraft: '',
+        ccDraft: '',
+        bccDraft: '',
+        showCc: seed.cc.length > 0,
+        showBcc: false,
+        subject: seed.subject,
+        subjectLocked: kind !== 'forward',
+        body:
+          kind === 'forward'
+            ? forwardQuote({
+                from: item.from,
+                date: item.date,
+                subject: item.subject,
+                to: item.to,
+                text: item.text
+              })
+            : replyQuote({ from: item.from, date: item.date, text: item.text }),
+        sending: false,
+        error: '',
+        unconfirmed: false
+      });
+    } catch (error) {
+      if (accountId.value !== captured) return;
+      actionNotice.value =
+        error instanceof GmailIpcError && error.code !== 'invalid-request'
+          ? error.message
+          : kind === 'forward'
+            ? 'Aurora could not forward this message.'
+            : 'Aurora could not reply in this conversation.';
+    }
+  };
+  if (compose.value !== null) askDiscard(() => void open());
+  else void open();
+}
+
+function draftText(field: 'to' | 'cc' | 'bcc'): string {
+  const draft = compose.value;
+  if (draft === null) return '';
+  if (field === 'to') return draft.toDraft;
+  if (field === 'cc') return draft.ccDraft;
+  return draft.bccDraft;
+}
+
+function setComposeInput(
+  field: 'toDraft' | 'ccDraft' | 'bccDraft' | 'subject' | 'body',
+  event: Event
+): void {
+  const draft = compose.value;
+  if (draft === null) return;
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLTextAreaElement)) return;
+  draft[field] = target.value;
+}
+
+function setDraftText(field: 'to' | 'cc' | 'bcc', value: string): void {
+  const draft = compose.value;
+  if (draft === null) return;
+  if (field === 'to') draft.toDraft = value;
+  else if (field === 'cc') draft.ccDraft = value;
+  else draft.bccDraft = value;
+}
+
+function commitAddresses(field: 'to' | 'cc' | 'bcc', raw = draftText(field)): boolean {
+  const draft = compose.value;
+  if (draft === null) return false;
+  const pieces = raw
+    .split(/[,;\n]/)
+    .map((piece) => piece.trim())
+    .filter((piece) => piece.length > 0);
+  if (pieces.length === 0) {
+    setDraftText(field, '');
+    return true;
+  }
+  if (pieces.some((piece) => !isMailboxAddress(piece))) {
+    draft.error = 'Enter a valid email address.';
+    setDraftText(field, raw);
+    return false;
+  }
+  const current = field === 'to' ? draft.to : field === 'cc' ? draft.cc : draft.bcc;
+  const seen = new Set(current.map((address) => address.toLowerCase()));
+  const next = [...current];
+  for (const piece of pieces) {
+    const key = piece.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push(piece);
+  }
+  if (field === 'to') draft.to = next;
+  else if (field === 'cc') draft.cc = next;
+  else draft.bcc = next;
+  setDraftText(field, '');
+  draft.error = '';
+  return true;
+}
+
+function removeAddress(field: 'to' | 'cc' | 'bcc', address: string): void {
+  const draft = compose.value;
+  if (draft === null) return;
+  const next = (field === 'to' ? draft.to : field === 'cc' ? draft.cc : draft.bcc).filter(
+    (item) => item !== address
+  );
+  if (field === 'to') draft.to = next;
+  else if (field === 'cc') draft.cc = next;
+  else draft.bcc = next;
+}
+
+function pasteAddresses(field: 'to' | 'cc' | 'bcc', event: ClipboardEvent): void {
+  const text = event.clipboardData?.getData('text') ?? '';
+  if (!/[,;\n]/.test(text)) return;
+  event.preventDefault();
+  commitAddresses(field, text);
+}
+
+function viewSent(): void {
+  openId.value = null;
+  messages.value = [];
+  labelId.value = 'SENT';
+  searchText.value = '';
+  activeQuery.value = null;
+  resetPages();
+  status.value = 'loading';
+  void reloadPage();
+}
+
+async function submitCompose(): Promise<void> {
+  const draft = compose.value;
+  if (draft === null || draft.sending) return;
+  if (!commitAddresses('to') || !commitAddresses('cc') || !commitAddresses('bcc')) return;
+  if (draft.to.length + draft.cc.length + draft.bcc.length === 0) {
+    draft.error = 'Add at least one recipient.';
+    return;
+  }
+  draft.sending = true;
+  draft.error = '';
+  draft.unconfirmed = false;
+  const generationAtSend = draft.generation;
+  const accountAtSend = draft.accountId;
+  const kind = draft.kind;
+  try {
+    const sent = await gmail().sendMessage({
+      accountId: draft.accountId,
+      kind: draft.kind,
+      threadId: draft.threadId,
+      messageId: draft.messageId,
+      to: draft.to,
+      cc: draft.cc,
+      bcc: draft.bcc,
+      subject: draft.subject,
+      body: draft.body
+    });
+    if (
+      compose.value === null ||
+      compose.value.generation !== generationAtSend ||
+      compose.value.accountId !== accountAtSend
+    ) {
+      return;
+    }
+    compose.value = null;
+    composeStatus.value = 'Message sent.';
+    if (
+      (kind === 'reply' || kind === 'reply-all') &&
+      openId.value !== null &&
+      (sent.threadId === null || sent.threadId === openId.value)
+    ) {
+      await openThread(openId.value);
+      return;
+    }
+    if (activeQuery.value !== null) searchStale.value = true;
+    else if (
+      kind !== 'reply' &&
+      kind !== 'reply-all' &&
+      labelId.value === 'SENT' &&
+      openId.value === null
+    ) {
+      void reloadPage();
+    }
+  } catch (error) {
+    if (compose.value === null || compose.value.generation !== generationAtSend) return;
+    compose.value.sending = false;
+    const failure = error instanceof GmailIpcError ? error.code : 'internal';
+    compose.value.unconfirmed = failure === 'send-unconfirmed';
+    if (failure === 'operation-in-progress') {
+      compose.value.error = 'This message is already being sent.';
+      return;
+    }
+    compose.value.error =
+      failure === 'send-unconfirmed' ||
+      failure === 'insufficient-scope' ||
+      failure === 'needs-reauth'
+        ? gmailErrorMessage(failure)
+        : 'Aurora could not send this message.';
+  }
+}
+
+function onComposeKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && pendingDiscard.value === null) {
+    event.preventDefault();
+    requestCloseCompose();
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const root = event.currentTarget;
+  if (!(root instanceof HTMLElement)) return;
+  const items = [...root.querySelectorAll<HTMLElement>('button, input, textarea, a')].filter(
+    (item) => !item.hasAttribute('disabled')
+  );
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (first === undefined || last === undefined) return;
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function onBodyKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    void submitCompose();
+  }
+}
+
 watch(trashTarget, (value) => {
   if (value === null) return;
   void nextTick(() => {
@@ -581,7 +987,16 @@ function onHtmlClick(event: MouseEvent): void {
     });
 }
 
+onBeforeRouteLeave((to) => {
+  if (compose.value === null || !composeDirty()) return true;
+  askDiscard(() => {
+    void router.push(to.fullPath);
+  });
+  return false;
+});
+
 onMounted(() => {
+  window.addEventListener('beforeunload', warnBeforeUnload);
   void google()
     .listAccounts()
     .then((list) => {
@@ -598,6 +1013,10 @@ onMounted(() => {
       fail(error);
     });
 });
+
+onUnmounted(() => {
+  window.removeEventListener('beforeunload', warnBeforeUnload);
+});
 </script>
 
 <template>
@@ -611,6 +1030,10 @@ onMounted(() => {
     />
     <template v-else>
       <div v-if="openId === null" class="mail-toolbar">
+        <button class="control" type="button" @click="requestNewMessage">
+          <SquarePen :size="16" :stroke-width="1.75" aria-hidden="true" />
+          Compose
+        </button>
         <div class="account-field">
           <select
             class="field field-select"
@@ -651,6 +1074,8 @@ onMounted(() => {
           </button>
         </form>
       </div>
+      <p v-if="composeStatus" role="status">{{ composeStatus }}</p>
+      <p v-if="actionNotice && openId === null" role="alert">{{ actionNotice }}</p>
       <div
         v-if="openId === null"
         class="mail-workspace"
@@ -835,6 +1260,10 @@ onMounted(() => {
             <ChevronLeft :size="16" :stroke-width="1.75" aria-hidden="true" />
             Back
           </button>
+          <button class="control" type="button" @click="requestNewMessage">
+            <SquarePen :size="16" :stroke-width="1.75" aria-hidden="true" />
+            Compose
+          </button>
           <h2 class="conversation-subject">{{ conversationSubject }}</h2>
           <p class="conversation-date">{{ formatDate(conversationDate) }}</p>
         </div>
@@ -947,6 +1376,18 @@ onMounted(() => {
             >
               <Star :size="16" :stroke-width="1.75" aria-hidden="true" />
             </button>
+            <button class="control" type="button" @click="requestSeed('reply', item)">
+              <Reply :size="16" :stroke-width="1.75" aria-hidden="true" />
+              Reply
+            </button>
+            <button class="control" type="button" @click="requestSeed('reply-all', item)">
+              <ReplyAll :size="16" :stroke-width="1.75" aria-hidden="true" />
+              Reply all
+            </button>
+            <button class="control" type="button" @click="requestSeed('forward', item)">
+              <Forward :size="16" :stroke-width="1.75" aria-hidden="true" />
+              Forward
+            </button>
             <button
               v-if="hasRecipients(item)"
               class="control"
@@ -992,6 +1433,189 @@ onMounted(() => {
       <button class="control control-danger" type="button" @click="confirmTrash">
         Move to Trash
       </button>
+    </div>
+    <div
+      v-if="compose !== null"
+      class="mail-dialog mail-composer"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="compose-title"
+      @keydown="onComposeKeydown"
+    >
+      <h2 id="compose-title">{{ composeTitle(compose.kind) }}</h2>
+      <div class="compose-row">
+        <span>From</span>
+        <p>{{ compose.from }}</p>
+      </div>
+      <div class="compose-row">
+        <label for="compose-to">To</label>
+        <div class="compose-addresses">
+          <span v-for="address in compose.to" :key="address" class="compose-chip">
+            {{ address }}
+            <button
+              class="control"
+              type="button"
+              :aria-label="`Remove ${address}`"
+              :disabled="compose.sending"
+              @click="removeAddress('to', address)"
+            >
+              Remove
+            </button>
+          </span>
+          <input
+            id="compose-to"
+            ref="composeToInput"
+            class="field field-text"
+            type="email"
+            aria-label="To"
+            :value="compose.toDraft"
+            :disabled="compose.sending"
+            @input="setComposeInput('toDraft', $event)"
+            @keydown.enter.prevent="commitAddresses('to')"
+            @blur="commitAddresses('to')"
+            @paste="pasteAddresses('to', $event)"
+          />
+        </div>
+      </div>
+      <div class="compose-row">
+        <button
+          class="control"
+          type="button"
+          :disabled="compose.sending"
+          @click="compose.showCc = true"
+        >
+          Cc
+        </button>
+        <button
+          class="control"
+          type="button"
+          :disabled="compose.sending"
+          @click="compose.showBcc = true"
+        >
+          Bcc
+        </button>
+      </div>
+      <div v-if="compose.showCc" class="compose-row">
+        <label for="compose-cc">Cc</label>
+        <div class="compose-addresses">
+          <span v-for="address in compose.cc" :key="address" class="compose-chip">
+            {{ address }}
+            <button
+              class="control"
+              type="button"
+              :aria-label="`Remove ${address}`"
+              :disabled="compose.sending"
+              @click="removeAddress('cc', address)"
+            >
+              Remove
+            </button>
+          </span>
+          <input
+            id="compose-cc"
+            class="field field-text"
+            type="email"
+            aria-label="Cc"
+            :value="compose.ccDraft"
+            :disabled="compose.sending"
+            @input="setComposeInput('ccDraft', $event)"
+            @keydown.enter.prevent="commitAddresses('cc')"
+            @blur="commitAddresses('cc')"
+            @paste="pasteAddresses('cc', $event)"
+          />
+        </div>
+      </div>
+      <div v-if="compose.showBcc" class="compose-row">
+        <label for="compose-bcc">Bcc</label>
+        <div class="compose-addresses">
+          <span v-for="address in compose.bcc" :key="address" class="compose-chip">
+            {{ address }}
+            <button
+              class="control"
+              type="button"
+              :aria-label="`Remove ${address}`"
+              :disabled="compose.sending"
+              @click="removeAddress('bcc', address)"
+            >
+              Remove
+            </button>
+          </span>
+          <input
+            id="compose-bcc"
+            class="field field-text"
+            type="email"
+            aria-label="Bcc"
+            :value="compose.bccDraft"
+            :disabled="compose.sending"
+            @input="setComposeInput('bccDraft', $event)"
+            @keydown.enter.prevent="commitAddresses('bcc')"
+            @blur="commitAddresses('bcc')"
+            @paste="pasteAddresses('bcc', $event)"
+          />
+        </div>
+      </div>
+      <div class="compose-row">
+        <label for="compose-subject">Subject</label>
+        <input
+          v-if="!compose.subjectLocked"
+          id="compose-subject"
+          class="field field-text"
+          type="text"
+          maxlength="998"
+          aria-label="Subject"
+          :value="compose.subject"
+          :disabled="compose.sending"
+          @input="setComposeInput('subject', $event)"
+        />
+        <p v-else id="compose-subject">{{ compose.subject }}</p>
+      </div>
+      <textarea
+        ref="composeBodyInput"
+        class="field field-text compose-body"
+        aria-label="Message"
+        :value="compose.body"
+        :disabled="compose.sending"
+        @input="setComposeInput('body', $event)"
+        @keydown="onBodyKeydown"
+      />
+      <p v-if="compose.error" role="alert">{{ compose.error }}</p>
+      <div class="compose-actions">
+        <button v-if="compose.unconfirmed" class="control" type="button" @click="viewSent">
+          Check Sent
+        </button>
+        <button
+          class="control"
+          type="button"
+          :disabled="compose.sending"
+          @click="requestCloseCompose"
+        >
+          Close
+        </button>
+        <button
+          class="control control-accent"
+          type="button"
+          :disabled="compose.sending"
+          :aria-busy="compose.sending ? 'true' : undefined"
+          @click="submitCompose"
+        >
+          <Send :size="16" :stroke-width="1.75" aria-hidden="true" />
+          Send
+        </button>
+      </div>
+    </div>
+    <div
+      v-if="pendingDiscard !== null"
+      class="mail-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="discard-title"
+      @keydown.esc.prevent="keepCompose"
+    >
+      <h2 id="discard-title">Discard this message?</h2>
+      <p>The unsent message will be lost.</p>
+      <button ref="keepComposeButton" class="control" type="button" @click="keepCompose">
+        Keep editing
+      </button>
+      <button class="control control-danger" type="button" @click="discardCompose">Discard</button>
     </div>
   </div>
 </template>

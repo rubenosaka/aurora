@@ -1,9 +1,25 @@
 import { type GmailLabel, type GmailMessage, type GmailThreadSummary } from '../../shared/gmail.ts';
 import { isGmailId, isGmailPageToken } from '../../shared/gmail.ts';
 import { isGoogleAccountId } from '../../shared/google-accounts.ts';
+import {
+  collectRecipients,
+  forwardSubject,
+  hasHeaderBreak,
+  isMailboxAddress,
+  mailboxesFromHeader,
+  messageIdsFromHeader,
+  replySubject,
+  seedRecipients,
+  trimReferences,
+  type ComposeMessage,
+  type ComposeSeed,
+  type ComposeSeedQuery,
+  type ComposeSent
+} from '../../shared/mail-compose.ts';
 import { OAuthFlowError } from '../oauth/errors.ts';
 import { type GoogleAccountService } from '../oauth/google-accounts.ts';
 import { PersistenceError } from '../persistence/errors.ts';
+import { buildOutgoingRaw } from './compose-mime.ts';
 import { GmailError } from './errors.ts';
 import { classifyGmailFailure, readLimitedBody, recordGmailFailure, retryDelay } from './http.ts';
 import { acceptExternalUrl } from './links.ts';
@@ -14,6 +30,16 @@ const listPayloadLimit = 512_000;
 const threadPayloadLimit = 2_000_000;
 const visibleSystemLabels = ['INBOX', 'SENT', 'DRAFT', 'SPAM', 'TRASH', 'STARRED', 'IMPORTANT'];
 const metadataHeaders = ['From', 'To', 'Cc', 'Bcc', 'Subject', 'Date'];
+const composeHeaders = [
+  'From',
+  'To',
+  'Cc',
+  'Reply-To',
+  'Subject',
+  'Date',
+  'Message-ID',
+  'References'
+];
 
 export interface GmailReaderDependencies {
   accounts: GoogleAccountService;
@@ -60,6 +86,8 @@ export interface GmailReader {
     threadId: string,
     messageId: string
   ): Promise<{ threadId: string; messageId: string; starred: boolean }>;
+  composeSeed(query: ComposeSeedQuery): Promise<ComposeSeed>;
+  sendMessage(message: ComposeMessage): Promise<ComposeSent>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -343,6 +371,7 @@ interface GmailRequest {
   method: 'GET' | 'POST';
   body?: string;
   mutation?: boolean;
+  delivery?: 'send';
 }
 
 const readRequest: GmailRequest = { method: 'GET' };
@@ -352,6 +381,7 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
     deps.sleep ??
     ((milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const busyThreads = new Set<string>();
+  const busySends = new Set<string>();
 
   async function gmailJson(
     token: string,
@@ -373,23 +403,33 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
         signal: AbortSignal.timeout(10_000)
       });
     } catch {
+      if (request.delivery === 'send') throw new GmailError('send-unconfirmed');
       throw new GmailError('network');
     }
-    const bytes = await readLimitedBody(response);
+    let bytes: Uint8Array;
+    try {
+      bytes = await readLimitedBody(response);
+    } catch (error) {
+      if (request.delivery === 'send') throw new GmailError('send-unconfirmed', response.status);
+      throw error;
+    }
     let payload: unknown = null;
     if (bytes.byteLength > 0) {
       try {
         payload = JSON.parse(Buffer.from(bytes).toString('utf8')) as unknown;
       } catch {
+        if (request.delivery === 'send') throw new GmailError('send-unconfirmed', response.status);
         if (response.ok) throw new GmailError('unavailable', response.status);
         payload = null;
       }
     }
     if (response.ok) {
+      if (request.delivery === 'send') return acceptedSend(payload, response.status);
       if (payload === null) throw new GmailError('unavailable', response.status);
       return payload;
     }
     const failure = classifyGmailFailure(response.status, payload);
+    if (request.delivery === 'send') throw sendFailure(response.status, failure);
     const retry =
       attempt === 0 &&
       (response.status === 500 || response.status === 503 || failure.code === 'rate-limited');
@@ -559,6 +599,12 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
     },
     unstarMessage(accountId, threadId, messageId) {
       return changeStar(accountId, threadId, messageId, false);
+    },
+    composeSeed(query) {
+      return loadComposeSeed(query);
+    },
+    sendMessage(message) {
+      return deliverMessage(message);
     }
   };
 
@@ -676,6 +722,211 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
       return { threadId, messageId, starred };
     });
   }
+
+  function requireGrant(accountId: string): void {
+    const grant = deps.accounts.modificationGrant(accountId);
+    if (grant === 'needs-reauth') throw new GmailError('needs-reauth');
+    if (grant !== 'ready') throw new GmailError('insufficient-scope');
+  }
+
+  function senderIdentity(accountId: string): { email: string; displayName: string | null } {
+    const account = deps.accounts.listAccounts().find((item) => item.id === accountId);
+    if (account === undefined || account.status !== 'connected')
+      throw new GmailError('needs-reauth');
+    if (account.email === null || !isMailboxAddress(account.email))
+      throw new GmailError('invalid-request');
+    return { email: account.email, displayName: account.displayName };
+  }
+
+  async function loadComposeSource(
+    accountId: string,
+    threadId: string,
+    messageId: string
+  ): Promise<{
+    threadId: string;
+    subject: string;
+    from: string[];
+    to: string[];
+    cc: string[];
+    replyTo: string[];
+    messageIdHeader: string | null;
+    references: string[];
+  }> {
+    const url = new URL(`${gmailRoot}/messages/${messageId}`);
+    url.searchParams.set('format', 'metadata');
+    for (const header of composeHeaders) url.searchParams.append('metadataHeaders', header);
+    const payload = await authed(accountId, url.href, readRequest);
+    if (!isRecord(payload) || payload.threadId !== threadId)
+      throw new GmailError('invalid-request');
+    const headers = headerMap(isRecord(payload.payload) ? payload.payload.headers : undefined);
+    const parent = messageIdsFromHeader(headers.get('message-id') ?? '');
+    return {
+      threadId,
+      subject: headers.get('subject') ?? '',
+      from: mailboxesFromHeader(headers.get('from') ?? ''),
+      to: mailboxesFromHeader(headers.get('to') ?? ''),
+      cc: mailboxesFromHeader(headers.get('cc') ?? ''),
+      replyTo: mailboxesFromHeader(headers.get('reply-to') ?? ''),
+      messageIdHeader: parent[0] ?? null,
+      references: messageIdsFromHeader(headers.get('references') ?? '')
+    };
+  }
+
+  async function loadComposeSeed(query: ComposeSeedQuery): Promise<ComposeSeed> {
+    if (
+      !isGoogleAccountId(query.accountId) ||
+      !isGmailId(query.threadId) ||
+      !isGmailId(query.messageId)
+    ) {
+      throw new GmailError('invalid-request');
+    }
+    return withRead(query.accountId, async () => {
+      requireGrant(query.accountId);
+      const identity = senderIdentity(query.accountId);
+      const source = await loadComposeSource(query.accountId, query.threadId, query.messageId);
+      const subject =
+        query.kind === 'forward' ? forwardSubject(source.subject) : replySubject(source.subject);
+      if (subject === null) throw new GmailError('invalid-request');
+      if (query.kind !== 'forward' && source.messageIdHeader === null) {
+        throw new GmailError('invalid-request');
+      }
+      const recipients = seedRecipients({
+        kind: query.kind,
+        from: source.from,
+        to: source.to,
+        cc: source.cc,
+        replyTo: source.replyTo,
+        selfAddress: identity.email
+      });
+      return { to: recipients.to, cc: recipients.cc, subject };
+    });
+  }
+
+  async function deliverMessage(message: ComposeMessage): Promise<ComposeSent> {
+    if (!isGoogleAccountId(message.accountId)) throw new GmailError('invalid-request');
+    if (busySends.has(message.accountId)) throw new GmailError('operation-in-progress');
+    busySends.add(message.accountId);
+    try {
+      return await withRead(message.accountId, async () => {
+        requireGrant(message.accountId);
+        const identity = senderIdentity(message.accountId);
+        const recipients = collectRecipients(message.to, message.cc, message.bcc);
+        if (recipients === null) throw new GmailError('invalid-request');
+        let subject = message.subject;
+        let inReplyTo: string | null = null;
+        let references: string[] = [];
+        let threadId: string | null = null;
+        if (message.kind === 'reply' || message.kind === 'reply-all') {
+          if (!isGmailId(message.threadId) || !isGmailId(message.messageId)) {
+            throw new GmailError('invalid-request');
+          }
+          const source = await loadComposeSource(
+            message.accountId,
+            message.threadId,
+            message.messageId
+          );
+          const expected = replySubject(source.subject);
+          if (
+            expected === null ||
+            message.subject !== expected ||
+            source.messageIdHeader === null
+          ) {
+            throw new GmailError('invalid-request');
+          }
+          subject = expected;
+          inReplyTo = source.messageIdHeader;
+          references = trimReferences(source.references, source.messageIdHeader);
+          threadId = message.threadId;
+        } else if (message.threadId !== null || message.messageId !== null) {
+          throw new GmailError('invalid-request');
+        }
+        if (hasHeaderBreak(subject)) throw new GmailError('invalid-request');
+        const raw = buildOutgoingRaw({
+          fromName: identity.displayName,
+          fromEmail: identity.email,
+          recipients,
+          subject,
+          body: message.body,
+          inReplyTo,
+          references,
+          now: new Date()
+        });
+        const requestBody: { raw: string; threadId?: string } = { raw };
+        if (threadId !== null) requestBody.threadId = threadId;
+        const payload = await authed(message.accountId, `${gmailRoot}/messages/send`, {
+          method: 'POST',
+          body: JSON.stringify(requestBody),
+          delivery: 'send'
+        });
+        if (!isRecord(payload) || !isGmailId(payload.id)) throw new GmailError('send-unconfirmed');
+        if (
+          payload.threadId !== undefined &&
+          payload.threadId !== null &&
+          !isGmailId(payload.threadId)
+        ) {
+          throw new GmailError('send-unconfirmed');
+        }
+        return {
+          id: payload.id,
+          threadId: isGmailId(payload.threadId) ? payload.threadId : null
+        };
+      });
+    } finally {
+      busySends.delete(message.accountId);
+    }
+  }
+}
+
+function headerMap(value: unknown): Map<string, string> {
+  const headers = new Map<string, string>();
+  if (!Array.isArray(value)) return headers;
+  for (const header of value) {
+    if (!isRecord(header) || typeof header.name !== 'string' || typeof header.value !== 'string') {
+      continue;
+    }
+    headers.set(header.name.toLowerCase(), header.value);
+  }
+  return headers;
+}
+
+function acceptedSend(payload: unknown, status: number): unknown {
+  if (!isRecord(payload) || !isGmailId(payload.id))
+    throw new GmailError('send-unconfirmed', status);
+  if (payload.threadId !== undefined && payload.threadId !== null && !isGmailId(payload.threadId)) {
+    throw new GmailError('send-unconfirmed', status);
+  }
+  return payload;
+}
+
+function sendFailure(
+  status: number,
+  failure: { code: GmailError['code']; reason: string | null }
+): GmailError {
+  if (status === 401) return new GmailError('gmail-rejected', 401, failure.reason);
+  if (status === 429 || status === 500 || status === 503 || failure.code === 'rate-limited') {
+    recordGmailFailure(status, failure.reason);
+    return new GmailError('send-unconfirmed', status, failure.reason);
+  }
+  if (status === 404) {
+    recordGmailFailure(status, failure.reason);
+    return new GmailError('not-found', status, failure.reason);
+  }
+  if (
+    status === 403 &&
+    (failure.reason === 'insufficientPermissions' ||
+      failure.reason === 'ACCESS_TOKEN_SCOPE_INSUFFICIENT')
+  ) {
+    recordGmailFailure(status, failure.reason);
+    return new GmailError('insufficient-scope', status, failure.reason);
+  }
+  if (status === 403) {
+    recordGmailFailure(status, failure.reason);
+    return new GmailError('permission-denied', status, failure.reason);
+  }
+  recordGmailFailure(status, failure.reason);
+  if (status >= 500) return new GmailError('send-unconfirmed', status, failure.reason);
+  if (status === 400) return new GmailError('gmail-rejected', status, failure.reason);
+  return new GmailError('gmail-rejected', status, failure.reason);
 }
 
 function mutationCode(

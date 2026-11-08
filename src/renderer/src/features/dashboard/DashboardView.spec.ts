@@ -33,7 +33,9 @@ function gmail(): GmailBridge {
     addLabel: async () => ({ ok: false, error: { code: 'internal' } }),
     removeLabel: async () => ({ ok: false, error: { code: 'internal' } }),
     starMessage: async () => ({ ok: false, error: { code: 'internal' } }),
-    unstarMessage: async () => ({ ok: false, error: { code: 'internal' } })
+    unstarMessage: async () => ({ ok: false, error: { code: 'internal' } }),
+    composeSeed: async () => ({ ok: false, error: { code: 'internal' } }),
+    sendMessage: async () => ({ ok: false, error: { code: 'internal' } })
   };
 }
 

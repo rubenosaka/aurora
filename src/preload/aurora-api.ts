@@ -8,11 +8,13 @@ import {
 import {
   gmailAddLabelChannel,
   gmailArchiveThreadChannel,
+  gmailComposeSeedChannel,
   gmailLabelsChannel,
   gmailMarkReadChannel,
   gmailMarkUnreadChannel,
   gmailOpenLinkChannel,
   gmailRemoveLabelChannel,
+  gmailSendMessageChannel,
   gmailStarMessageChannel,
   gmailThreadChannel,
   gmailThreadsChannel,
@@ -39,6 +41,14 @@ import {
   type GmailThreadList,
   type GmailThreadQuery
 } from '../shared/gmail.ts';
+import {
+  parseComposeSeed,
+  parseComposeSent,
+  type ComposeMessage,
+  type ComposeSeed,
+  type ComposeSeedQuery,
+  type ComposeSent
+} from '../shared/mail-compose.ts';
 import {
   type GoogleResult,
   googleAccountsCancelChannel,
@@ -260,6 +270,12 @@ export function createAuroraApi(invoke: AuroraInvoke): AuroraBridge {
           { accountId, threadId, messageId },
           parseGmailStarChanged
         );
+      },
+      composeSeed(query: ComposeSeedQuery): Promise<GmailResult<ComposeSeed>> {
+        return gmailAction(invoke, gmailComposeSeedChannel, query, parseComposeSeed);
+      },
+      sendMessage(message: ComposeMessage): Promise<GmailResult<ComposeSent>> {
+        return gmailAction(invoke, gmailSendMessageChannel, message, parseComposeSent);
       }
     })
   });
