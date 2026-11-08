@@ -20,6 +20,8 @@ export interface AuthorizationCodeTokens {
 }
 
 export interface RefreshedTokens {
+  accessToken: string;
+  expiresIn: number | null;
   refreshToken: string | null;
 }
 
@@ -62,9 +64,34 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (code <= 31 || code === 127) return true;
+  }
+  return false;
+}
+
 function optionalRefreshToken(value: unknown): string | null {
   if (value === undefined) return null;
   if (typeof value !== 'string' || value.length < 1 || value.length > 8192) {
+    throw new OAuthFlowError('provider-rejected');
+  }
+  if (hasControlCharacter(value)) throw new OAuthFlowError('provider-rejected');
+  return value;
+}
+
+function requireAccessToken(value: unknown): string {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 8192) {
+    throw new OAuthFlowError('provider-rejected');
+  }
+  if (hasControlCharacter(value)) throw new OAuthFlowError('provider-rejected');
+  return value;
+}
+
+function optionalExpiresIn(value: unknown): number | null {
+  if (value === undefined) return null;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 86400) {
     throw new OAuthFlowError('provider-rejected');
   }
   return value;
@@ -203,7 +230,11 @@ export async function refreshAccessToken(input: {
   if (!isRecord(payload)) throw new OAuthFlowError('provider-rejected');
   readError(payload);
   if (!response.ok) throw new OAuthFlowError('provider-rejected');
-  return { refreshToken: optionalRefreshToken(payload.refresh_token) };
+  return {
+    accessToken: requireAccessToken(payload.access_token),
+    expiresIn: optionalExpiresIn(payload.expires_in),
+    refreshToken: optionalRefreshToken(payload.refresh_token)
+  };
 }
 
 export async function revokeRefreshToken(input: {

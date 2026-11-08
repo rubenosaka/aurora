@@ -4,7 +4,13 @@ import { defineConfig } from 'electron-vite';
 import { contentSecurityPolicyPlugin } from './src/main/content-security-policy.ts';
 
 export default defineConfig({
-  main: {},
+  main: {
+    build: {
+      externalizeDeps: {
+        exclude: ['sanitize-html']
+      }
+    }
+  },
   preload: {
     build: {
       rollupOptions: {

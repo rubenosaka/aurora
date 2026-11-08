@@ -32,7 +32,8 @@ import {
   exchangeAuthorizationCode,
   refreshAccessToken,
   revokeRefreshToken,
-  buildAuthorizationUrl
+  buildAuthorizationUrl,
+  type RefreshedTokens
 } from './google-flow.ts';
 import { createGoogleJwksClient, verifyGoogleIdToken, type JwksClient } from './id-token.ts';
 import {
@@ -86,6 +87,10 @@ export interface GoogleAccountService {
   cancel(): GoogleCancelResult;
   disconnect(accountId: string): Promise<GoogleDisconnectResult>;
   refreshAccount(accountId: string): Promise<void>;
+  beginMailboxRead(): void;
+  endMailboxRead(): void;
+  mailboxAccess(accountId: string, force?: boolean): Promise<string>;
+  forgetMailboxAccess(accountId: string): void;
   shutdown(): void;
 }
 
@@ -150,7 +155,88 @@ export function createGoogleAccountService(deps: GoogleAccountDependencies): Goo
   const revokeTimeout = deps.revokeTimeoutMs ?? requestTimeoutMs;
   const lifecycle = new AbortController();
   let generation = 0;
+  let readers = 0;
   let phase: Phase = { name: 'idle' };
+  const accessTokens = new Map<string, { token: string; expiresAt: number }>();
+  const accessFlights = new Map<string, Promise<string>>();
+
+  function blockIfReading(): void {
+    if (readers > 0) throw new OAuthFlowError('operation-in-progress');
+  }
+
+  function forgetAccess(accountId: string): void {
+    accessTokens.delete(accountId);
+  }
+
+  async function loadAccess(accountId: string): Promise<string> {
+    const account = getConnectedAccount(deps.database, accountId);
+    if (account.provider !== 'google') throw new OAuthFlowError('invalid-request');
+    if (account.status !== 'connected') throw new OAuthFlowError('needs-reauth');
+    let refreshToken: string;
+    try {
+      refreshToken = readAccountRefreshToken(deps.database, deps.cipher, accountId);
+    } catch (error) {
+      if (
+        error instanceof PersistenceError &&
+        (error.code === 'decrypt-failed' || error.code === 'not-found')
+      ) {
+        noteGoogleReauth(deps.database, accountId, now);
+        forgetAccess(accountId);
+        throw new OAuthFlowError('needs-reauth');
+      }
+      throw error;
+    }
+    const client = readOAuthClient(deps.database, account.oauthClientId);
+    let refreshed: RefreshedTokens;
+    try {
+      refreshed = await refreshAccessToken({
+        fetchImpl: deps.fetchImpl,
+        clientId: client.clientId,
+        refreshToken,
+        clientSecret: configuredClientSecret(client.id),
+        cancel: lifecycle.signal,
+        timeoutMs: httpTimeout
+      });
+    } catch (error) {
+      if (error instanceof OAuthFlowError && error.code === 'needs-reauth') {
+        markRefreshTokenUnusable(deps.database, accountId, now);
+        forgetAccess(accountId);
+      }
+      throw error;
+    }
+    if (refreshed.refreshToken !== null) {
+      replaceAccountRefreshToken(
+        deps.database,
+        deps.cipher,
+        accountId,
+        refreshed.refreshToken,
+        now
+      );
+    }
+    if (refreshed.expiresIn !== null) {
+      const expiresAt = now().getTime() + (refreshed.expiresIn - 60) * 1000;
+      if (expiresAt > now().getTime()) {
+        accessTokens.set(accountId, { token: refreshed.accessToken, expiresAt });
+      }
+    }
+    return refreshed.accessToken;
+  }
+
+  function mailboxAccess(accountId: string, force = false): Promise<string> {
+    if (!force) {
+      const cached = accessTokens.get(accountId);
+      if (cached !== undefined && cached.expiresAt > now().getTime()) {
+        return Promise.resolve(cached.token);
+      }
+      const existing = accessFlights.get(accountId);
+      if (existing !== undefined) return existing;
+    }
+    const flight = loadAccess(accountId).finally(() => {
+      if (accessFlights.get(accountId) === flight) accessFlights.delete(accountId);
+    });
+    accessFlights.set(accountId, flight);
+    return flight;
+  }
 
   function owns(current: number): boolean {
     return generation === current;
@@ -179,6 +265,7 @@ export function createGoogleAccountService(deps: GoogleAccountDependencies): Goo
   }
 
   async function authorize(expectedAccountId: string | null): Promise<GoogleAccountSummary> {
+    blockIfReading();
     const client = requireClient();
     if (expectedAccountId !== null) {
       let selected: ReturnType<typeof getConnectedAccount>;
@@ -294,6 +381,7 @@ export function createGoogleAccountService(deps: GoogleAccountDependencies): Goo
       }
     },
     saveClientId(clientId: string, clientSecret: string | null = null) {
+      blockIfReading();
       if (phase.name !== 'idle') throw new OAuthFlowError('operation-in-progress');
       try {
         return saveGoogleClient(deps.database, deps.cipher, clientId, clientSecret, now);
@@ -329,6 +417,7 @@ export function createGoogleAccountService(deps: GoogleAccountDependencies): Goo
       return { cancelled: true };
     },
     async disconnect(accountId: string) {
+      blockIfReading();
       if (phase.name !== 'idle') throw new OAuthFlowError('operation-in-progress');
       const current = ++generation;
       phase = { name: 'busy', generation: current };
@@ -357,6 +446,7 @@ export function createGoogleAccountService(deps: GoogleAccountDependencies): Goo
           outcome = revoked === 'revoked' ? 'revoked' : 'disconnected-local';
         }
         deleteConnectedAccount(deps.database, accountId);
+        forgetAccess(accountId);
         return { outcome };
       } catch (error) {
         throw asFlowError(error);
@@ -365,6 +455,7 @@ export function createGoogleAccountService(deps: GoogleAccountDependencies): Goo
       }
     },
     async refreshAccount(accountId: string) {
+      blockIfReading();
       if (phase.name !== 'idle') throw new OAuthFlowError('operation-in-progress');
       const current = ++generation;
       phase = { name: 'busy', generation: current };
@@ -417,7 +508,22 @@ export function createGoogleAccountService(deps: GoogleAccountDependencies): Goo
         release(current);
       }
     },
+    beginMailboxRead() {
+      if (phase.name !== 'idle') throw new OAuthFlowError('operation-in-progress');
+      readers += 1;
+    },
+    endMailboxRead() {
+      readers = Math.max(0, readers - 1);
+    },
+    mailboxAccess(accountId: string, force = false) {
+      return mailboxAccess(accountId, force);
+    },
+    forgetMailboxAccess(accountId: string) {
+      forgetAccess(accountId);
+    },
     shutdown() {
+      accessTokens.clear();
+      accessFlights.clear();
       lifecycle.abort();
       if (phase.name === 'authorizing') {
         const cancelPhase = phase.cancel;

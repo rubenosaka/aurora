@@ -3,11 +3,12 @@ import { describe, it } from 'node:test';
 import { shellRouteByPath, shellRoutes, unknownRouteRedirect } from './routes.ts';
 
 describe('shell routes', () => {
-  it('lists Dashboard, Integrations, and Settings', () => {
+  it('lists Dashboard, Mail, Integrations, and Settings', () => {
     assert.deepEqual(
       shellRoutes.map((route) => [route.name, route.path, route.title]),
       [
         ['dashboard', '/', 'Dashboard'],
+        ['mail', '/mail', 'Mail'],
         ['integrations', '/integrations', 'Integrations'],
         ['settings', '/settings', 'Settings']
       ]

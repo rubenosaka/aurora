@@ -1,11 +1,13 @@
 import { createRouter, createWebHashHistory } from 'vue-router';
 import DashboardView from '../features/dashboard/DashboardView.vue';
 import IntegrationsView from '../features/integrations/IntegrationsView.vue';
+import MailView from '../features/mail/MailView.vue';
 import SettingsView from '../features/settings/SettingsView.vue';
 import { shellRoutes, unknownRouteRedirect, type ShellRouteName } from './routes.ts';
 
 const views: Record<ShellRouteName, object> = {
   dashboard: DashboardView,
+  mail: MailView,
   integrations: IntegrationsView,
   settings: SettingsView
 };

@@ -6,6 +6,23 @@ import {
   type AppInfo
 } from '../shared/app-info.ts';
 import {
+  gmailLabelsChannel,
+  gmailOpenLinkChannel,
+  gmailThreadChannel,
+  gmailThreadsChannel,
+  parseGmailLabelList,
+  parseGmailOpenedLink,
+  parseGmailResult,
+  parseGmailThread,
+  parseGmailThreadList,
+  type GmailLabelList,
+  type GmailOpenedLink,
+  type GmailResult,
+  type GmailThread,
+  type GmailThreadList,
+  type GmailThreadQuery
+} from '../shared/gmail.ts';
+import {
   type GoogleResult,
   googleAccountsCancelChannel,
   googleAccountsConnectChannel,
@@ -32,6 +49,10 @@ import {
 export type AuroraInvoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
 
 function internalGoogle<T>(): GoogleResult<T> {
+  return { ok: false, error: { code: 'internal' } };
+}
+
+function internalGmail<T>(): GmailResult<T> {
   return { ok: false, error: { code: 'internal' } };
 }
 
@@ -96,6 +117,32 @@ export function createAuroraApi(invoke: AuroraInvoke): AuroraBridge {
           .then(() => invoke(googleAccountsDisconnectChannel, { accountId }))
           .then((raw) => parseGoogleResult(raw, parseGoogleDisconnectResult))
           .catch(() => internalGoogle());
+      }
+    }),
+    gmail: Object.freeze({
+      listLabels(accountId: string): Promise<GmailResult<GmailLabelList>> {
+        return Promise.resolve()
+          .then(() => invoke(gmailLabelsChannel, { accountId }))
+          .then((raw) => parseGmailResult(raw, parseGmailLabelList))
+          .catch(() => internalGmail());
+      },
+      listThreads(query: GmailThreadQuery): Promise<GmailResult<GmailThreadList>> {
+        return Promise.resolve()
+          .then(() => invoke(gmailThreadsChannel, query))
+          .then((raw) => parseGmailResult(raw, parseGmailThreadList))
+          .catch(() => internalGmail());
+      },
+      readThread(accountId: string, threadId: string): Promise<GmailResult<GmailThread>> {
+        return Promise.resolve()
+          .then(() => invoke(gmailThreadChannel, { accountId, threadId }))
+          .then((raw) => parseGmailResult(raw, parseGmailThread))
+          .catch(() => internalGmail());
+      },
+      openLink(url: string): Promise<GmailResult<GmailOpenedLink>> {
+        return Promise.resolve()
+          .then(() => invoke(gmailOpenLinkChannel, { url }))
+          .then((raw) => parseGmailResult(raw, parseGmailOpenedLink))
+          .catch(() => internalGmail());
       }
     })
   });

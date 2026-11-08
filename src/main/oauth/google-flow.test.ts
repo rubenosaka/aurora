@@ -97,13 +97,27 @@ describe('Google OAuth requests', () => {
       clientId,
       refreshToken: 'refresh-token-one'
     });
-    assert.deepEqual(rotated, { refreshToken: 'refresh-token-two' });
+    assert.deepEqual(rotated, {
+      accessToken: 'access-token-value',
+      expiresIn: null,
+      refreshToken: 'refresh-token-two'
+    });
     const kept = await refreshAccessToken({
-      fetchImpl: async () => json({ access_token: 'access-token-value' }),
+      fetchImpl: async () => json({ access_token: 'access-token-value', expires_in: 3600 }),
       clientId,
       refreshToken: 'refresh-token-one'
     });
+    assert.equal(kept.accessToken, 'access-token-value');
+    assert.equal(kept.expiresIn, 3600);
     assert.equal(kept.refreshToken, null);
+    await assert.rejects(
+      refreshAccessToken({
+        fetchImpl: async () => json({ access_token: 'bad\ntoken', expires_in: 3600 }),
+        clientId,
+        refreshToken: 'refresh-token-one'
+      }),
+      (error: unknown) => error instanceof OAuthFlowError && error.code === 'provider-rejected'
+    );
     assert.equal(
       await revokeRefreshToken({
         fetchImpl: async () => new Response(null, { status: 200 }),

@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils';
 import { describe, expect, it } from 'vitest';
 import { AuroraIpcError, type AppInfo, type IpcResult } from '../../../../shared/app-info.ts';
+import { type GmailBridge } from '../../../../shared/gmail.ts';
 import { type GoogleBridge } from '../../../../shared/google-accounts.ts';
 import DashboardView from './DashboardView.vue';
 
@@ -18,8 +19,17 @@ function google(): GoogleBridge {
   };
 }
 
+function gmail(): GmailBridge {
+  return {
+    listLabels: async () => ({ ok: false, error: { code: 'internal' } }),
+    listThreads: async () => ({ ok: false, error: { code: 'internal' } }),
+    readThread: async () => ({ ok: false, error: { code: 'internal' } }),
+    openLink: async () => ({ ok: false, error: { code: 'internal' } })
+  };
+}
+
 function bridge(getInfo: () => Promise<IpcResult<AppInfo>>): void {
-  window.aurora = { app: { getInfo }, google: google() };
+  window.aurora = { app: { getInfo }, google: google(), gmail: gmail() };
 }
 
 describe('DashboardView', () => {

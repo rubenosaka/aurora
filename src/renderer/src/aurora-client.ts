@@ -5,6 +5,15 @@ import {
   AuroraIpcError
 } from '../../shared/app-info.ts';
 import {
+  GmailIpcError,
+  unwrapGmailResult,
+  parseGmailLabelList,
+  parseGmailOpenedLink,
+  parseGmailThread,
+  parseGmailThreadList,
+  type GmailThreadQuery
+} from '../../shared/gmail.ts';
+import {
   GoogleIpcError,
   unwrapGoogleResult,
   isGoogleAccountSummary,
@@ -96,6 +105,43 @@ export function createRendererAppApi(bridge: AuroraBridge): AuroraApi {
         } catch (error) {
           if (error instanceof GoogleIpcError) throw error;
           throw new GoogleIpcError('internal');
+        }
+      }
+    }),
+    gmail: Object.freeze({
+      async listLabels(accountId: string) {
+        try {
+          return unwrapGmailResult(await bridge.gmail.listLabels(accountId), parseGmailLabelList);
+        } catch (error) {
+          if (error instanceof GmailIpcError) throw error;
+          throw new GmailIpcError('internal');
+        }
+      },
+      async listThreads(query: GmailThreadQuery) {
+        try {
+          return unwrapGmailResult(await bridge.gmail.listThreads(query), parseGmailThreadList);
+        } catch (error) {
+          if (error instanceof GmailIpcError) throw error;
+          throw new GmailIpcError('internal');
+        }
+      },
+      async readThread(accountId: string, threadId: string) {
+        try {
+          return unwrapGmailResult(
+            await bridge.gmail.readThread(accountId, threadId),
+            parseGmailThread
+          );
+        } catch (error) {
+          if (error instanceof GmailIpcError) throw error;
+          throw new GmailIpcError('internal');
+        }
+      },
+      async openLink(url: string) {
+        try {
+          return unwrapGmailResult(await bridge.gmail.openLink(url), parseGmailOpenedLink);
+        } catch (error) {
+          if (error instanceof GmailIpcError) throw error;
+          throw new GmailIpcError('internal');
         }
       }
     })

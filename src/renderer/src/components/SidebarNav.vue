@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { Blocks, LayoutDashboard, Settings } from '@lucide/vue';
+import { Blocks, LayoutDashboard, Mail, Settings } from '@lucide/vue';
 import { shellRoutes, type ShellRouteName } from '../app/routes.ts';
 
 const icons: Record<ShellRouteName, object> = {
   dashboard: LayoutDashboard,
+  mail: Mail,
   integrations: Blocks,
   settings: Settings
 };

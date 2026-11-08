@@ -12,6 +12,6 @@ describe('SidebarNav', () => {
     expect(current.text()).toContain('Integrations');
     expect(current.attributes('href')).toBe('#/integrations');
     expect(current.classes().join(' ')).toContain('focus-visible:outline-solid');
-    expect(wrapper.findAll('a')).toHaveLength(3);
+    expect(wrapper.findAll('a')).toHaveLength(4);
   });
 });

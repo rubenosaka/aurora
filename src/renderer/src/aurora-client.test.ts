@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { AuroraIpcError, type AppInfo, type AuroraBridge } from '../../shared/app-info.ts';
+import { GmailIpcError, type GmailBridge } from '../../shared/gmail.ts';
 import { GoogleIpcError, type GoogleBridge } from '../../shared/google-accounts.ts';
 import { createRendererAppApi } from './aurora-client.ts';
 
@@ -18,8 +19,17 @@ function google(): GoogleBridge {
   };
 }
 
+function gmail(): GmailBridge {
+  return {
+    listLabels: async () => ({ ok: false, error: { code: 'internal' } }),
+    listThreads: async () => ({ ok: false, error: { code: 'internal' } }),
+    readThread: async () => ({ ok: false, error: { code: 'internal' } }),
+    openLink: async () => ({ ok: false, error: { code: 'internal' } })
+  };
+}
+
 function bridge(getInfo: AuroraBridge['app']['getInfo']): AuroraBridge {
-  return { app: { getInfo }, google: google() };
+  return { app: { getInfo }, google: google(), gmail: gmail() };
 }
 
 describe('createRendererAppApi', () => {
@@ -122,6 +132,128 @@ describe('createRendererAppApi', () => {
       assert.equal(error.message.includes('secret'), false);
       return true;
     });
+  });
+
+  it('unwraps gmail reads and hides a transport failure', async () => {
+    const accountId = '00000000-0000-4000-8000-000000000001';
+    const api = createRendererAppApi({
+      ...bridge(async () => ({ ok: true, value: info })),
+      gmail: {
+        listLabels: async () => ({ ok: true, value: { labels: [] } }),
+        listThreads: async () => ({ ok: true, value: { threads: [], nextPageToken: null } }),
+        readThread: async () => ({ ok: true, value: { id: 'threadsame', messages: [] } }),
+        openLink: async () => {
+          throw new Error('C:\\secret');
+        }
+      }
+    });
+    assert.deepEqual(await api.gmail.listLabels(accountId), { labels: [] });
+    assert.deepEqual(
+      await api.gmail.listThreads({
+        accountId,
+        labelId: null,
+        query: 'from:ada@example.com',
+        pageToken: null
+      }),
+      { threads: [], nextPageToken: null }
+    );
+    assert.deepEqual(await api.gmail.readThread(accountId, 'threadsame'), {
+      id: 'threadsame',
+      messages: []
+    });
+    await assert.rejects(api.gmail.openLink('https://example.com'), (error: unknown) => {
+      assert.ok(error instanceof GmailIpcError);
+      assert.equal(error.code, 'internal');
+      assert.equal(error.message.includes('secret'), false);
+      return true;
+    });
+  });
+
+  it('rethrows a gmail or google error from each method', async () => {
+    const accountId = '00000000-0000-4000-8000-000000000001';
+    const denied = { ok: false, error: { code: 'network' } } as const;
+    const api = createRendererAppApi({
+      app: { getInfo: async () => ({ ok: true, value: info }) },
+      google: {
+        getClientId: async () => denied,
+        saveClientId: async () => denied,
+        listAccounts: async () => denied,
+        connect: async () => denied,
+        reconnect: async () => denied,
+        cancel: async () => denied,
+        disconnect: async () => {
+          throw new Error('down');
+        }
+      },
+      gmail: {
+        listLabels: async () => denied,
+        listThreads: async () => denied,
+        readThread: async () => denied,
+        openLink: async () => denied
+      }
+    });
+    await assert.rejects(
+      api.google.getClientId(),
+      (error: unknown) => error instanceof GoogleIpcError
+    );
+    await assert.rejects(
+      api.google.saveClientId('desktop-client.apps.googleusercontent.com', null),
+      (error: unknown) => error instanceof GoogleIpcError
+    );
+    await assert.rejects(
+      api.google.listAccounts(),
+      (error: unknown) => error instanceof GoogleIpcError
+    );
+    await assert.rejects(api.google.connect(), (error: unknown) => error instanceof GoogleIpcError);
+    await assert.rejects(
+      api.google.reconnect(accountId),
+      (error: unknown) => error instanceof GoogleIpcError
+    );
+    await assert.rejects(api.google.cancel(), (error: unknown) => error instanceof GoogleIpcError);
+    await assert.rejects(api.google.disconnect(accountId), (error: unknown) => {
+      assert.ok(error instanceof GoogleIpcError);
+      assert.equal(error.code, 'internal');
+      return true;
+    });
+    await assert.rejects(
+      api.gmail.listLabels(accountId),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.listThreads({ accountId, labelId: null, query: null, pageToken: null }),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.readThread(accountId, 'threadsame'),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.openLink('https://example.com'),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+  });
+
+  it('unwraps a gmail result and hides a leaked access token', async () => {
+    const api = createRendererAppApi({
+      ...bridge(async () => ({ ok: true, value: info })),
+      gmail: {
+        ...bridge(async () => ({ ok: true, value: info })).gmail,
+        listLabels: async () =>
+          ({
+            ok: true,
+            value: { labels: [], access_token: 'access-a' }
+          }) as Awaited<ReturnType<GmailBridge['listLabels']>>
+      }
+    });
+    await assert.rejects(
+      api.gmail.listLabels('00000000-0000-4000-8000-000000000001'),
+      (error: unknown) => {
+        assert.ok(error instanceof GmailIpcError);
+        assert.equal(error.code, 'invalid-response');
+        assert.equal(error.message.includes('access-a'), false);
+        return true;
+      }
+    );
   });
 
   it('unwraps a Google account result and hides a leaked token', async () => {

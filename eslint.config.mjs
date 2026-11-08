@@ -88,5 +88,11 @@ export default tseslint.config(
       'vue/multi-word-component-names': 'off'
     }
   },
+  {
+    files: ['src/renderer/src/features/mail/MailView.vue'],
+    rules: {
+      'vue/no-v-html': 'off'
+    }
+  },
   prettier
 );

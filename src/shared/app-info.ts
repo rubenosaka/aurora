@@ -1,3 +1,4 @@
+import { type GmailApi, type GmailBridge } from './gmail.ts';
 import { type GoogleApi, type GoogleBridge } from './google-accounts.ts';
 
 export const appInfoChannel = 'app:get-info';
@@ -104,6 +105,7 @@ export interface AuroraBridge {
     getInfo(): Promise<IpcResult<AppInfo>>;
   };
   google: GoogleBridge;
+  gmail: GmailBridge;
 }
 
 export interface AuroraApi {
@@ -111,4 +113,5 @@ export interface AuroraApi {
     getInfo(): Promise<AppInfo>;
   };
   google: GoogleApi;
+  gmail: GmailApi;
 }

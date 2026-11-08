@@ -1,5 +1,6 @@
 export const shellRoutes = [
   { name: 'dashboard', path: '/', title: 'Dashboard' },
+  { name: 'mail', path: '/mail', title: 'Mail' },
   { name: 'integrations', path: '/integrations', title: 'Integrations' },
   { name: 'settings', path: '/settings', title: 'Settings' }
 ] as const;

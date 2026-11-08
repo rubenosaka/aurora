@@ -18,6 +18,8 @@ import { createAuroraWindow } from './aurora-window.ts';
 import { openAuroraDatabase } from './persistence/database.ts';
 import { type SecretCipher, createSafeStorageCipher } from './persistence/safe-storage-cipher.ts';
 import { openApplicationDatabase, persistenceStartupMessage } from './persistence/startup.ts';
+import { attachGmailIpc } from './gmail-ipc.ts';
+import { createGmailReader } from './gmail/reader.ts';
 import { attachGoogleIpc } from './google-ipc.ts';
 import { createGoogleAccountService, type GoogleAccountService } from './oauth/google-accounts.ts';
 
@@ -110,6 +112,18 @@ void app.whenReady().then(() => {
       },
       senderSnapshot,
       googleAccounts
+    );
+    const gmail = createGmailReader({
+      accounts: googleAccounts,
+      fetchImpl: globalThis.fetch.bind(globalThis),
+      openExternal: (url) => shell.openExternal(url)
+    });
+    attachGmailIpc(
+      (channel, listener) => {
+        ipcMain.handle(channel, listener);
+      },
+      senderSnapshot,
+      gmail
     );
   } catch (error) {
     dialog.showErrorBox('Aurora', persistenceStartupMessage(error));

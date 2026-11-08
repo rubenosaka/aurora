@@ -46,6 +46,10 @@ function service(overrides: Partial<GoogleAccountService> = {}): GoogleAccountSe
     cancel: () => ({ cancelled: true }),
     disconnect: async () => ({ outcome: 'revoked' }),
     refreshAccount: async () => undefined,
+    beginMailboxRead: () => undefined,
+    endMailboxRead: () => undefined,
+    mailboxAccess: async () => 'access-token-value',
+    forgetMailboxAccess: () => undefined,
     shutdown: () => undefined,
     ...overrides
   };
