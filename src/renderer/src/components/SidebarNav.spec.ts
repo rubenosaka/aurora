@@ -11,7 +11,9 @@ describe('SidebarNav', () => {
     const current = wrapper.get('[aria-current="page"]');
     expect(current.text()).toContain('Integrations');
     expect(current.attributes('href')).toBe('#/integrations');
-    expect(current.classes().join(' ')).toContain('focus-visible:outline-solid');
+    expect(current.classes()).toContain('nav-link');
+    expect(wrapper.get('.wordmark').text()).toContain('Aurora');
+    expect(wrapper.get('.wordmark-bar').attributes('aria-hidden')).toBe('true');
     expect(wrapper.findAll('a')).toHaveLength(4);
   });
 });

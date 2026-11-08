@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { CircleAlert, Inbox, LoaderCircle } from '@lucide/vue';
+
 defineProps<{
   kind: 'loading' | 'empty' | 'error';
   title: string;
@@ -8,13 +10,30 @@ defineProps<{
 
 <template>
   <section
-    class="rounded-lg border border-border bg-surface px-5 py-8"
+    class="status-panel"
     :aria-busy="kind === 'loading' ? 'true' : undefined"
     :role="kind === 'error' ? 'alert' : kind === 'empty' ? 'status' : undefined"
   >
-    <h2 class="text-base font-medium text-text">{{ title }}</h2>
-    <p class="mt-2 text-sm" :class="kind === 'error' ? 'text-danger' : 'text-muted'">
-      {{ message }}
-    </p>
+    <LoaderCircle
+      v-if="kind === 'loading'"
+      class="status-icon"
+      :size="20"
+      :stroke-width="1.75"
+      aria-hidden="true"
+    />
+    <Inbox
+      v-else-if="kind === 'empty'"
+      class="status-icon"
+      :size="20"
+      :stroke-width="1.75"
+      aria-hidden="true"
+    />
+    <CircleAlert v-else class="status-icon" :size="20" :stroke-width="1.75" aria-hidden="true" />
+    <div>
+      <h2 class="text-sm font-medium text-text">{{ title }}</h2>
+      <p class="mt-2 text-sm" :class="kind === 'error' ? 'text-danger' : 'text-muted'">
+        {{ message }}
+      </p>
+    </div>
   </section>
 </template>

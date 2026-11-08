@@ -1,13 +1,21 @@
 <script setup lang="ts">
-import { RouterView } from 'vue-router';
+import { computed } from 'vue';
+import { RouterView, useRoute } from 'vue-router';
 import SidebarNav from '../components/SidebarNav.vue';
+
+const route = useRoute();
+const columnClass = computed(() =>
+  route.name === 'mail'
+    ? 'mx-auto w-full min-w-0 px-8 py-8'
+    : 'mx-auto w-full min-w-0 max-w-[720px] px-8 py-8'
+);
 </script>
 
 <template>
   <div class="flex h-full min-h-0 bg-canvas text-text">
     <SidebarNav />
-    <main class="min-w-0 flex-1 overflow-auto">
-      <div class="mx-auto w-full max-w-[720px] px-8 py-8">
+    <main class="shell-main min-w-0 flex-1 overflow-auto">
+      <div :class="columnClass">
         <RouterView />
       </div>
     </main>

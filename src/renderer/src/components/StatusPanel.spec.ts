@@ -9,6 +9,7 @@ describe('StatusPanel', () => {
     });
     expect(wrapper.attributes('aria-busy')).toBe('true');
     expect(wrapper.attributes('role')).toBeUndefined();
+    expect(wrapper.find('svg').attributes('aria-hidden')).toBe('true');
   });
 
   it('exposes an empty state', () => {

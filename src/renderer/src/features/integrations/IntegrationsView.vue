@@ -101,7 +101,7 @@ function statusLabel(account: GoogleAccountSummary): string {
 </script>
 
 <template>
-  <h1 class="text-2xl font-medium tracking-tight text-text">Integrations</h1>
+  <h1 class="page-title">Integrations</h1>
   <div class="mt-6 flex flex-col gap-4">
     <StatusPanel
       v-if="status === 'loading'"
@@ -124,21 +124,15 @@ function statusLabel(account: GoogleAccountSummary): string {
       />
       <div class="flex gap-3">
         <button
-          class="h-10 rounded-md bg-accent px-4 text-sm text-accent-text outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
+          class="control control-accent"
           type="button"
           :disabled="!clientConfigured || busy"
+          :aria-busy="busy ? 'true' : undefined"
           @click="connect"
         >
           Connect
         </button>
-        <button
-          v-if="authorizing"
-          class="h-10 rounded-md border border-border bg-surface px-4 text-sm text-text outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-accent"
-          type="button"
-          @click="cancel"
-        >
-          Cancel
-        </button>
+        <button v-if="authorizing" class="control" type="button" @click="cancel">Cancel</button>
       </div>
       <p v-if="clientConfigured && accounts.length === 0" class="text-sm text-muted" role="status">
         No Google accounts are connected.
@@ -155,16 +149,11 @@ function statusLabel(account: GoogleAccountSummary): string {
               <p class="mt-1 text-sm text-muted">{{ statusLabel(account) }}</p>
             </div>
             <div class="flex gap-2">
-              <button
-                class="h-10 rounded-md border border-border px-3 text-sm text-text outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
-                type="button"
-                :disabled="busy"
-                @click="reconnect(account.id)"
-              >
+              <button class="control" type="button" :disabled="busy" @click="reconnect(account.id)">
                 Reconnect
               </button>
               <button
-                class="h-10 rounded-md border border-border px-3 text-sm text-danger outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
+                class="control control-danger text-danger"
                 type="button"
                 :disabled="busy"
                 @click="disconnect(account.id)"

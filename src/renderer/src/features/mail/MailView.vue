@@ -31,6 +31,7 @@ import {
 } from '../../../../shared/google-accounts.ts';
 import { createRendererAppApi } from '../../aurora-client.ts';
 import StatusPanel from '../../components/StatusPanel.vue';
+import './mail.css';
 
 const folderIcons: Record<string, Component> = {
   INBOX: Inbox,

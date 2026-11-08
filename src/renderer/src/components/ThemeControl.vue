@@ -16,10 +16,10 @@ const labels: Record<ThemePreference, string> = {
       <label
         v-for="preference in themePreferences"
         :key="preference"
-        class="flex h-10 items-center gap-3 rounded-md px-2 text-sm text-text"
+        class="choice text-sm text-text"
       >
         <input
-          class="size-4 accent-accent outline-none focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-accent"
+          class="size-4 accent-accent"
           type="radio"
           name="aurora-theme"
           :value="preference"

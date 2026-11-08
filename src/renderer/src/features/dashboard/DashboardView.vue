@@ -23,7 +23,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <h1 class="text-2xl font-medium tracking-tight text-text">Dashboard</h1>
+  <h1 class="page-title">Dashboard</h1>
   <div class="mt-6">
     <StatusPanel
       v-if="status === 'loading'"
