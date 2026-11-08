@@ -32,6 +32,13 @@ function pendingMail(): Pick<
   | 'unstarMessage'
   | 'composeSeed'
   | 'sendMessage'
+  | 'saveDraft'
+  | 'openDraft'
+  | 'deleteDraft'
+  | 'sendDraft'
+  | 'pickAttachments'
+  | 'dropAttachment'
+  | 'downloadAttachment'
 > {
   const denied = async (): Promise<{ ok: false; error: { code: 'internal' } }> => ({
     ok: false,
@@ -48,7 +55,14 @@ function pendingMail(): Pick<
     starMessage: denied,
     unstarMessage: denied,
     composeSeed: denied,
-    sendMessage: denied
+    sendMessage: denied,
+    saveDraft: denied,
+    openDraft: denied,
+    deleteDraft: denied,
+    sendDraft: denied,
+    pickAttachments: denied,
+    dropAttachment: denied,
+    downloadAttachment: denied
   };
 }
 
@@ -266,6 +280,68 @@ describe('createRendererAppApi', () => {
     );
     await assert.rejects(
       api.gmail.openLink('https://example.com'),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    const save = {
+      accountId,
+      draftId: null,
+      expectedMessageId: null,
+      kind: 'new' as const,
+      threadId: null,
+      messageId: null,
+      to: ['bob@example.com'],
+      cc: [],
+      bcc: [],
+      subject: 'Hello',
+      body: 'Hi',
+      attachmentTokens: [],
+      replaceConfirmed: false,
+      composerGeneration: 1
+    };
+    await assert.rejects(
+      api.gmail.saveDraft(save),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.openDraft({
+        accountId,
+        threadId: 'threadsame',
+        messageId: 'messageone',
+        composerGeneration: 1
+      }),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.deleteDraft({
+        accountId,
+        draftId: 'draftone',
+        expectedMessageId: 'messageone'
+      }),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.sendDraft({ ...save, draftId: 'draftone', expectedMessageId: 'messageone' }),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.pickAttachments({ accountId, composerGeneration: 1 }),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.dropAttachment({
+        accountId,
+        composerGeneration: 1,
+        token: 'A'.repeat(32)
+      }),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.downloadAttachment({
+        accountId,
+        messageId: 'messageone',
+        partId: null,
+        attachmentId: 'attachone'
+      }),
       (error: unknown) => error instanceof GmailIpcError
     );
   });

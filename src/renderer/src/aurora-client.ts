@@ -24,6 +24,20 @@ import {
   type ComposeSeedQuery
 } from '../../shared/mail-compose.ts';
 import {
+  parseAttachmentDropped,
+  parseAttachmentSaved,
+  parseDraftDeleted,
+  parseDraftOpened,
+  parseDraftSaved,
+  parsePickedAttachments,
+  type AttachmentDownloadRequest,
+  type AttachmentDropRequest,
+  type AttachmentPickRequest,
+  type DraftDeleteRequest,
+  type DraftOpenRequest,
+  type DraftSaveRequest
+} from '../../shared/mail-draft.ts';
+import {
   GoogleIpcError,
   unwrapGoogleResult,
   isGoogleAccountSummary,
@@ -205,6 +219,27 @@ export function createRendererAppApi(bridge: AuroraBridge): AuroraApi {
       },
       sendMessage(message: ComposeMessage) {
         return readGmail(bridge.gmail.sendMessage(message), parseComposeSent);
+      },
+      saveDraft(request: DraftSaveRequest) {
+        return readGmail(bridge.gmail.saveDraft(request), parseDraftSaved);
+      },
+      openDraft(request: DraftOpenRequest) {
+        return readGmail(bridge.gmail.openDraft(request), parseDraftOpened);
+      },
+      deleteDraft(request: DraftDeleteRequest) {
+        return readGmail(bridge.gmail.deleteDraft(request), parseDraftDeleted);
+      },
+      sendDraft(request: DraftSaveRequest) {
+        return readGmail(bridge.gmail.sendDraft(request), parseComposeSent);
+      },
+      pickAttachments(request: AttachmentPickRequest) {
+        return readGmail(bridge.gmail.pickAttachments(request), parsePickedAttachments);
+      },
+      dropAttachment(request: AttachmentDropRequest) {
+        return readGmail(bridge.gmail.dropAttachment(request), parseAttachmentDropped);
+      },
+      downloadAttachment(request: AttachmentDownloadRequest) {
+        return readGmail(bridge.gmail.downloadAttachment(request), parseAttachmentSaved);
       }
     })
   });

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { GmailError } from './errors.ts';
 import {
   composeBodyByteLimit,
@@ -9,6 +10,15 @@ import {
 } from '../../shared/mail-compose.ts';
 
 export const composeRawByteLimit = 1_048_576;
+export const draftRawByteLimit = 12_582_912;
+
+const mediaTypePattern = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
+
+export interface OutgoingFile {
+  fileName: string;
+  mediaType: string;
+  bytes: Uint8Array;
+}
 
 const encodedWordLimit = 45;
 
@@ -103,6 +113,52 @@ function encodeBody(value: string): string {
   return lines === null ? '' : lines.join('\r\n');
 }
 
+function encodeBytes(bytes: Uint8Array): string {
+  const encoded = Buffer.from(bytes).toString('base64');
+  const lines = encoded.match(/.{1,76}/g);
+  return lines === null ? '' : lines.join('\r\n');
+}
+
+function safeFileName(value: string): string {
+  let text = '';
+  for (const character of value) {
+    if (character === '/' || character === '\\' || character === '"' || character === ';') continue;
+    const code = character.charCodeAt(0);
+    if (code <= 31 || code === 127) continue;
+    text += character;
+    if (text.length === 200) break;
+  }
+  const trimmed = text.trim();
+  return trimmed.length === 0 ? 'Attachment' : trimmed;
+}
+
+function fileNameParameter(value: string): string {
+  const name = safeFileName(value);
+  if (hasHeaderBreak(name)) throw new GmailError('invalid-request');
+  const ascii = [...name].every((character) => {
+    const code = character.charCodeAt(0);
+    return code >= 32 && code <= 126;
+  });
+  if (ascii) return `filename="${name}"`;
+  return `filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
+function mixedBoundary(body: string, files: readonly OutgoingFile[]): string {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const token = randomBytes(18)
+      .toString('base64url')
+      .replace(/[^A-Za-z0-9]/g, 'A')
+      .slice(0, 24)
+      .padEnd(24, 'A');
+    const visible = body.includes(token) || files.some((file) => file.fileName.includes(token));
+    const embedded = files.some((file) =>
+      Buffer.from(file.bytes).toString('latin1').includes(token)
+    );
+    if (!visible && !embedded) return token;
+  }
+  throw new GmailError('unavailable');
+}
+
 export function buildOutgoingRaw(input: {
   fromName: string | null;
   fromEmail: string;
@@ -112,11 +168,22 @@ export function buildOutgoingRaw(input: {
   inReplyTo: string | null;
   references: readonly string[];
   now: Date;
+  files?: readonly OutgoingFile[];
 }): string {
   if (!isComposeBody(input.body) || hasHeaderBreak(input.subject))
     throw new GmailError('invalid-request');
   if (utf8Bytes(input.body) > composeBodyByteLimit) throw new GmailError('too-large');
-  const headers = [
+  const files = input.files ?? [];
+  if (files.length > 10) throw new GmailError('too-large');
+  let fileBytes = 0;
+  for (const file of files) {
+    if (!mediaTypePattern.test(file.mediaType) || hasHeaderBreak(file.fileName)) {
+      throw new GmailError('invalid-request');
+    }
+    fileBytes += file.bytes.byteLength;
+    if (fileBytes > 5 * 1024 * 1024) throw new GmailError('too-large');
+  }
+  const common = [
     'MIME-Version: 1.0',
     fold('Date', imfDate(input.now)),
     fold('From', formatAddress(input.fromName, input.fromEmail)),
@@ -125,12 +192,34 @@ export function buildOutgoingRaw(input: {
     addressHeader('Bcc', input.recipients.bcc),
     fold('Subject', headerText(input.subject)),
     input.inReplyTo === null ? null : fold('In-Reply-To', input.inReplyTo),
-    input.references.length === 0 ? null : fold('References', input.references.join(' ')),
-    'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: base64'
+    input.references.length === 0 ? null : fold('References', input.references.join(' '))
   ].filter((line): line is string => line !== null);
-  const message = `${headers.join('\r\n')}\r\n\r\n${encodeBody(input.body)}\r\n`;
+  let message: string;
+  if (files.length === 0) {
+    message = `${[...common, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64'].join('\r\n')}\r\n\r\n${encodeBody(input.body)}\r\n`;
+  } else {
+    const boundary = mixedBoundary(input.body, files);
+    const parts = [
+      `--${boundary}`,
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: base64',
+      '',
+      encodeBody(input.body),
+      ...files.flatMap((file) => [
+        `--${boundary}`,
+        `Content-Type: ${file.mediaType}`,
+        `Content-Disposition: attachment; ${fileNameParameter(file.fileName)}`,
+        'Content-Transfer-Encoding: base64',
+        '',
+        encodeBytes(file.bytes)
+      ]),
+      `--${boundary}--`,
+      ''
+    ];
+    message = `${[...common, `Content-Type: multipart/mixed; boundary="${boundary}"`].join('\r\n')}\r\n\r\n${parts.join('\r\n')}`;
+  }
   const raw = Buffer.from(message, 'utf8').toString('base64url');
-  if (utf8Bytes(raw) > composeRawByteLimit) throw new GmailError('too-large');
+  const limit = files.length === 0 ? composeRawByteLimit : draftRawByteLimit;
+  if (utf8Bytes(raw) > limit) throw new GmailError('too-large');
   return raw;
 }

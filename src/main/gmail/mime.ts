@@ -129,6 +129,14 @@ function mediaTypeOf(value: unknown): string {
   return value;
 }
 
+function partIdOf(value: unknown): string | null {
+  return typeof value === 'string' && /^[0-9.]{1,32}$/.test(value) ? value : null;
+}
+
+function attachmentIdOf(value: unknown): string | null {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,2000}$/.test(value) ? value : null;
+}
+
 function sizeOf(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return 0;
   if (value > Number.MAX_SAFE_INTEGER) return 0;
@@ -205,7 +213,9 @@ function walk(part: unknown, depth: number, collected: Collected, alternative: b
     collected.attachments.push({
       fileName: displayFileName(filename ?? ''),
       mimeType: mediaTypeOf(part.mimeType),
-      size: sizeOf(isRecord(part.body) ? part.body.size : 0)
+      size: sizeOf(isRecord(part.body) ? part.body.size : 0),
+      partId: partIdOf(part.partId),
+      attachmentId: attachmentIdOf(isRecord(part.body) ? part.body.attachmentId : null)
     });
     return;
   }

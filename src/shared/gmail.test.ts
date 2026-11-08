@@ -66,7 +66,15 @@ describe('gmail contracts', () => {
       text: 'Hello',
       html: null,
       imagesOmitted: false,
-      attachments: [{ fileName: 'notes.txt', mimeType: 'text/plain', size: 4 }]
+      attachments: [
+        {
+          fileName: 'notes.txt',
+          mimeType: 'text/plain',
+          size: 4,
+          partId: '1',
+          attachmentId: null
+        }
+      ]
     };
     assert.equal(parseGmailThread({ id: 'threadsame', messages: [message] })?.messages.length, 1);
     assert.equal(

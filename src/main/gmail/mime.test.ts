@@ -81,7 +81,13 @@ describe('gmail mime', () => {
     assert.equal(messages[0]?.imagesOmitted, true);
     assert.equal(messages[0]?.unread, true);
     assert.deepEqual(messages[0]?.attachments, [
-      { fileName: '..secret.pdf', mimeType: 'application/pdf', size: 42 }
+      {
+        fileName: '..secret.pdf',
+        mimeType: 'application/pdf',
+        size: 42,
+        partId: null,
+        attachmentId: null
+      }
     ]);
     assert.equal(JSON.stringify(messages).includes('pdf-bytes'), false);
   });
@@ -155,7 +161,13 @@ describe('gmail mime', () => {
     assert.equal(messages[0]?.subject?.length, 998);
     assert.equal(messages[0]?.subject?.startsWith('Hellos'), true);
     assert.deepEqual(messages[0]?.attachments, [
-      { fileName: 'notes.txt', mimeType: 'application/octet-stream', size: 3 }
+      {
+        fileName: 'notes.txt',
+        mimeType: 'application/octet-stream',
+        size: 3,
+        partId: null,
+        attachmentId: null
+      }
     ]);
   });
 

@@ -44,6 +44,7 @@ import {
   replyQuote,
   type ComposeSendKind
 } from '../../../../shared/mail-compose.ts';
+import { type DraftAttachmentRef } from '../../../../shared/mail-draft.ts';
 import { createRendererAppApi } from '../../aurora-client.ts';
 import StatusPanel from '../../components/StatusPanel.vue';
 import './mail.css';
@@ -80,6 +81,15 @@ interface MailCompose {
   sending: boolean;
   error: string;
   unconfirmed: boolean;
+  draftId: string | null;
+  expectedMessageId: string | null;
+  anchorThreadId: string | null;
+  attachments: DraftAttachmentRef[];
+  locked: boolean;
+  saving: boolean;
+  conflict: boolean;
+  saveUnconfirmed: boolean;
+  readOnlyHtml: string | null;
 }
 
 const props = defineProps<{ googleApi?: GoogleApi; gmailApi?: GmailApi }>();
@@ -116,7 +126,11 @@ const composeBodyInput = ref<HTMLTextAreaElement | null>(null);
 const keepComposeButton = ref<HTMLButtonElement | null>(null);
 let generation = 0;
 let composeEpoch = 0;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let saveFlight: Promise<boolean> | null = null;
 let trashOpener: HTMLElement | null = null;
+const downloadKey = ref('');
+const pendingDelete = ref(false);
 
 function google(): GoogleApi {
   return props.googleApi ?? createRendererAppApi(window.aurora).google;
@@ -619,8 +633,48 @@ function composeSnapshot(draft: MailCompose): string {
     ccDraft: draft.ccDraft,
     bccDraft: draft.bccDraft,
     subject: draft.subject,
-    body: draft.body
+    body: draft.body,
+    attachments: draft.attachments.map((file) => file.token)
   });
+}
+
+function clearSaveTimer(): void {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+}
+
+function composeHasContent(draft: MailCompose): boolean {
+  return (
+    draft.to.length + draft.cc.length + draft.bcc.length > 0 ||
+    draft.subject.length > 0 ||
+    draft.body.length > 0 ||
+    draft.attachments.length > 0 ||
+    draft.draftId !== null
+  );
+}
+
+function scheduleSave(): void {
+  const draft = compose.value;
+  if (
+    draft === null ||
+    draft.locked ||
+    draft.sending ||
+    draft.conflict ||
+    draft.saveUnconfirmed ||
+    draft.unconfirmed ||
+    draft.saving ||
+    !composeHasContent(draft)
+  ) {
+    return;
+  }
+  clearSaveTimer();
+  const generationAtSchedule = draft.generation;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    void saveCompose(generationAtSchedule);
+  }, 2000);
 }
 
 function composeDirty(): boolean {
@@ -641,22 +695,88 @@ function composeTitle(kind: ComposeSendKind): string {
   return 'New message';
 }
 
-function beginCompose(draft: Omit<MailCompose, 'generation' | 'baseline'>): void {
-  composeEpoch += 1;
-  const next: MailCompose = { ...draft, generation: composeEpoch, baseline: '' };
+function beginCompose(
+  draft: Omit<
+    MailCompose,
+    | 'generation'
+    | 'baseline'
+    | 'draftId'
+    | 'expectedMessageId'
+    | 'anchorThreadId'
+    | 'attachments'
+    | 'locked'
+    | 'saving'
+    | 'conflict'
+    | 'saveUnconfirmed'
+    | 'readOnlyHtml'
+  > &
+    Partial<
+      Pick<
+        MailCompose,
+        | 'draftId'
+        | 'expectedMessageId'
+        | 'anchorThreadId'
+        | 'attachments'
+        | 'locked'
+        | 'saving'
+        | 'conflict'
+        | 'saveUnconfirmed'
+        | 'readOnlyHtml'
+      >
+    >,
+  generationNumber?: number
+): void {
+  if (generationNumber === undefined) composeEpoch += 1;
+  const next: MailCompose = {
+    draftId: null,
+    expectedMessageId: null,
+    anchorThreadId: null,
+    attachments: [],
+    locked: false,
+    saving: false,
+    conflict: false,
+    saveUnconfirmed: false,
+    readOnlyHtml: null,
+    ...draft,
+    generation: generationNumber ?? composeEpoch,
+    baseline: ''
+  };
   next.baseline = composeSnapshot(next);
   compose.value = next;
-  composeStatus.value = '';
+  composeStatus.value = next.locked
+    ? 'Aurora cannot edit this draft without losing its formatting. The Gmail draft was not changed.'
+    : '';
   pendingDiscard.value = null;
+  pendingDelete.value = false;
   void nextTick(() => {
     if (next.subjectLocked) composeBodyInput.value?.focus();
     else composeToInput.value?.focus();
   });
 }
 
+function releaseAttachments(draft: MailCompose): void {
+  for (const file of draft.attachments) {
+    void gmail()
+      .dropAttachment({
+        accountId: draft.accountId,
+        composerGeneration: draft.generation,
+        token: file.token
+      })
+      .catch(() => undefined);
+  }
+}
+
+function closeCompose(): void {
+  const draft = compose.value;
+  clearSaveTimer();
+  compose.value = null;
+  pendingDelete.value = false;
+  if (draft !== null) releaseAttachments(draft);
+}
+
 function askDiscard(next: () => void): void {
   if (!composeDirty()) {
-    compose.value = null;
+    closeCompose();
     next();
     return;
   }
@@ -671,7 +791,7 @@ function keepCompose(): void {
 function discardCompose(): void {
   const next = pendingDiscard.value;
   pendingDiscard.value = null;
-  compose.value = null;
+  closeCompose();
   next?.();
 }
 
@@ -793,6 +913,7 @@ function setComposeInput(
   const target = event.target;
   if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLTextAreaElement)) return;
   draft[field] = target.value;
+  scheduleSave();
 }
 
 function setDraftText(field: 'to' | 'cc' | 'bcc', value: string): void {
@@ -833,6 +954,7 @@ function commitAddresses(field: 'to' | 'cc' | 'bcc', raw = draftText(field)): bo
   else draft.bcc = next;
   setDraftText(field, '');
   draft.error = '';
+  scheduleSave();
   return true;
 }
 
@@ -845,6 +967,7 @@ function removeAddress(field: 'to' | 'cc' | 'bcc', address: string): void {
   if (field === 'to') draft.to = next;
   else if (field === 'cc') draft.cc = next;
   else draft.bcc = next;
+  scheduleSave();
 }
 
 function pasteAddresses(field: 'to' | 'cc' | 'bcc', event: ClipboardEvent): void {
@@ -865,9 +988,353 @@ function viewSent(): void {
   void reloadPage();
 }
 
+async function saveCompose(generationAtSave: number): Promise<boolean> {
+  const draft = compose.value;
+  if (
+    draft === null ||
+    draft.generation !== generationAtSave ||
+    draft.locked ||
+    draft.conflict ||
+    draft.saveUnconfirmed ||
+    !composeHasContent(draft)
+  ) {
+    return false;
+  }
+  if (!commitAddresses('to') || !commitAddresses('cc') || !commitAddresses('bcc')) return false;
+  draft.saving = true;
+  composeStatus.value = 'Saving…';
+  const accountAtSave = draft.accountId;
+  const flight = gmail()
+    .saveDraft({
+      accountId: draft.accountId,
+      draftId: draft.draftId,
+      expectedMessageId: draft.expectedMessageId,
+      kind: draft.kind,
+      threadId: draft.threadId,
+      messageId: draft.messageId,
+      to: draft.to,
+      cc: draft.cc,
+      bcc: draft.bcc,
+      subject: draft.subject,
+      body: draft.body,
+      attachmentTokens: draft.attachments.map((file) => file.token),
+      replaceConfirmed: false,
+      composerGeneration: draft.generation
+    })
+    .then((saved) => {
+      if (
+        compose.value === null ||
+        compose.value.generation !== generationAtSave ||
+        compose.value.accountId !== accountAtSave
+      ) {
+        return false;
+      }
+      compose.value.draftId = saved.draftId;
+      compose.value.expectedMessageId = saved.messageId;
+      if (saved.threadId !== null) compose.value.anchorThreadId = saved.threadId;
+      compose.value.saving = false;
+      compose.value.baseline = composeSnapshot(compose.value);
+      composeStatus.value = 'Saved';
+      if (activeQuery.value !== null) searchStale.value = true;
+      else if (labelId.value === 'DRAFT' && openId.value === null) void reloadPage();
+      return true;
+    })
+    .catch((error: unknown) => {
+      if (compose.value === null || compose.value.generation !== generationAtSave) return false;
+      compose.value.saving = false;
+      const failure = error instanceof GmailIpcError ? error.code : 'internal';
+      if (failure === 'draft-conflict') {
+        compose.value.conflict = true;
+        composeStatus.value = gmailErrorMessage('draft-conflict');
+        return false;
+      }
+      if (failure === 'save-unconfirmed') {
+        compose.value.saveUnconfirmed = true;
+        composeStatus.value = gmailErrorMessage('save-unconfirmed');
+        return false;
+      }
+      composeStatus.value = 'Not saved';
+      return false;
+    });
+  saveFlight = flight;
+  try {
+    return await flight;
+  } finally {
+    if (saveFlight === flight) saveFlight = null;
+  }
+}
+
+async function overwriteDraft(): Promise<void> {
+  const draft = compose.value;
+  if (draft === null || !draft.conflict) return;
+  draft.conflict = false;
+  draft.saving = true;
+  const generationAtSave = draft.generation;
+  try {
+    const saved = await gmail().saveDraft({
+      accountId: draft.accountId,
+      draftId: draft.draftId,
+      expectedMessageId: draft.expectedMessageId,
+      kind: draft.kind,
+      threadId: draft.threadId,
+      messageId: draft.messageId,
+      to: draft.to,
+      cc: draft.cc,
+      bcc: draft.bcc,
+      subject: draft.subject,
+      body: draft.body,
+      attachmentTokens: draft.attachments.map((file) => file.token),
+      replaceConfirmed: true,
+      composerGeneration: draft.generation
+    });
+    if (compose.value === null || compose.value.generation !== generationAtSave) return;
+    compose.value.draftId = saved.draftId;
+    compose.value.expectedMessageId = saved.messageId;
+    if (saved.threadId !== null) compose.value.anchorThreadId = saved.threadId;
+    compose.value.baseline = composeSnapshot(compose.value);
+    compose.value.saving = false;
+    composeStatus.value = 'Saved';
+    scheduleSave();
+  } catch (error: unknown) {
+    if (compose.value === null || compose.value.generation !== generationAtSave) return;
+    compose.value.saving = false;
+    compose.value.conflict = true;
+    const failure = error instanceof GmailIpcError ? error.code : 'internal';
+    composeStatus.value =
+      failure === 'save-unconfirmed' || failure === 'draft-conflict'
+        ? gmailErrorMessage(failure)
+        : 'Not saved';
+    if (failure === 'save-unconfirmed') compose.value.saveUnconfirmed = true;
+  }
+}
+
+async function reloadDraft(): Promise<void> {
+  const draft = compose.value;
+  if (draft === null || draft.expectedMessageId === null) return;
+  const messageId = draft.expectedMessageId;
+  const threadId = draft.anchorThreadId ?? draft.threadId;
+  const item = messages.value.find((message) => message.id === messageId);
+  if (item !== undefined && openId.value !== null) {
+    closeCompose();
+    requestEdit(item);
+    return;
+  }
+  if (threadId === null) return;
+  const account = draft.accountId;
+  const from = draft.from;
+  closeCompose();
+  composeEpoch += 1;
+  const generationAtOpen = composeEpoch;
+  try {
+    const opened = await gmail().openDraft({
+      accountId: account,
+      threadId,
+      messageId,
+      composerGeneration: generationAtOpen
+    });
+    if (accountId.value !== account) return;
+    beginCompose(
+      {
+        accountId: account,
+        from,
+        kind: opened.kind,
+        threadId: opened.threadId,
+        messageId: opened.kind === 'new' ? null : messageId,
+        to: opened.to,
+        cc: opened.cc,
+        bcc: opened.bcc,
+        toDraft: '',
+        ccDraft: '',
+        bccDraft: '',
+        showCc: opened.cc.length > 0,
+        showBcc: opened.bcc.length > 0,
+        subject: opened.subject,
+        subjectLocked: opened.subjectLocked,
+        body: opened.body,
+        sending: false,
+        error: '',
+        unconfirmed: false,
+        draftId: opened.draftId,
+        expectedMessageId: opened.messageId,
+        anchorThreadId: opened.threadId ?? threadId,
+        attachments: opened.attachments,
+        locked: opened.locked,
+        readOnlyHtml: null
+      },
+      generationAtOpen
+    );
+  } catch (error: unknown) {
+    actionNotice.value =
+      error instanceof GmailIpcError ? error.message : gmailErrorMessage('internal');
+  }
+}
+
+function viewDrafts(): void {
+  openId.value = null;
+  messages.value = [];
+  labelId.value = 'DRAFT';
+  searchText.value = '';
+  activeQuery.value = null;
+  resetPages();
+  status.value = 'loading';
+  void reloadPage();
+}
+
+function requestEdit(item: GmailMessage): void {
+  if (!requireMailChange() || openId.value === null) return;
+  const threadId = openId.value;
+  const account = selectedAccount.value;
+  if (account === undefined) return;
+  const open = async (): Promise<void> => {
+    composeEpoch += 1;
+    const generationAtOpen = composeEpoch;
+    try {
+      const opened = await gmail().openDraft({
+        accountId: account.id,
+        threadId,
+        messageId: item.id,
+        composerGeneration: generationAtOpen
+      });
+      if (accountId.value !== account.id) return;
+      beginCompose(
+        {
+          accountId: account.id,
+          from: account.email ?? '',
+          kind: opened.kind,
+          threadId: opened.threadId,
+          messageId: opened.kind === 'new' ? null : item.id,
+          to: opened.to,
+          cc: opened.cc,
+          bcc: opened.bcc,
+          toDraft: '',
+          ccDraft: '',
+          bccDraft: '',
+          showCc: opened.cc.length > 0,
+          showBcc: opened.bcc.length > 0,
+          subject: opened.subject,
+          subjectLocked: opened.subjectLocked,
+          body: opened.body,
+          sending: false,
+          error: '',
+          unconfirmed: false,
+          draftId: opened.draftId,
+          expectedMessageId: opened.messageId,
+          anchorThreadId: opened.threadId ?? threadId,
+          attachments: opened.attachments,
+          locked: opened.locked,
+          readOnlyHtml: opened.locked ? item.html : null
+        },
+        generationAtOpen
+      );
+    } catch (error: unknown) {
+      actionNotice.value =
+        error instanceof GmailIpcError ? error.message : gmailErrorMessage('internal');
+    }
+  };
+  if (compose.value !== null) askDiscard(() => void open());
+  else void open();
+}
+
+async function pickFiles(): Promise<void> {
+  const draft = compose.value;
+  if (draft === null || draft.locked || draft.sending) return;
+  try {
+    const picked = await gmail().pickAttachments({
+      accountId: draft.accountId,
+      composerGeneration: draft.generation
+    });
+    if (compose.value === null || compose.value.generation !== draft.generation) return;
+    compose.value.attachments = [...compose.value.attachments, ...picked.attachments];
+    scheduleSave();
+  } catch (error: unknown) {
+    if (compose.value === null || compose.value.generation !== draft.generation) return;
+    const failure = error instanceof GmailIpcError ? error.code : 'internal';
+    compose.value.error =
+      failure === 'too-large'
+        ? 'This file is too large for Aurora to attach.'
+        : error instanceof GmailIpcError
+          ? error.message
+          : gmailErrorMessage('internal');
+  }
+}
+
+function removeFile(token: string): void {
+  const draft = compose.value;
+  if (draft === null || draft.locked || draft.sending) return;
+  draft.attachments = draft.attachments.filter((file) => file.token !== token);
+  void gmail()
+    .dropAttachment({
+      accountId: draft.accountId,
+      composerGeneration: draft.generation,
+      token
+    })
+    .catch(() => undefined);
+  scheduleSave();
+}
+
+async function confirmDeleteDraft(): Promise<void> {
+  const draft = compose.value;
+  if (
+    draft === null ||
+    draft.draftId === null ||
+    draft.expectedMessageId === null ||
+    draft.sending
+  ) {
+    return;
+  }
+  draft.sending = true;
+  try {
+    await gmail().deleteDraft({
+      accountId: draft.accountId,
+      draftId: draft.draftId,
+      expectedMessageId: draft.expectedMessageId
+    });
+    pendingDelete.value = false;
+    closeCompose();
+    composeStatus.value = 'Draft deleted.';
+    if (labelId.value === 'DRAFT' && activeQuery.value === null && openId.value === null) {
+      void reloadPage();
+    }
+  } catch (error: unknown) {
+    if (compose.value === null) return;
+    compose.value.sending = false;
+    pendingDelete.value = false;
+    const failure = error instanceof GmailIpcError ? error.code : 'internal';
+    compose.value.error =
+      failure === 'draft-conflict'
+        ? gmailErrorMessage(failure)
+        : 'Aurora could not delete this draft.';
+    if (failure === 'draft-conflict') compose.value.conflict = true;
+  }
+}
+
+async function downloadAttachment(
+  messageId: string,
+  attachment: GmailMessage['attachments'][number]
+): Promise<void> {
+  const key = `${messageId}:${attachment.partId ?? ''}:${attachment.attachmentId ?? ''}`;
+  downloadKey.value = key;
+  actionNotice.value = '';
+  try {
+    const saved = await gmail().downloadAttachment({
+      accountId: accountId.value,
+      messageId,
+      partId: attachment.partId,
+      attachmentId: attachment.attachmentId
+    });
+    if (saved.saved) actionNotice.value = 'Saved.';
+  } catch (error: unknown) {
+    actionNotice.value =
+      error instanceof GmailIpcError ? error.message : gmailErrorMessage('internal');
+  } finally {
+    if (downloadKey.value === key) downloadKey.value = '';
+  }
+}
+
 async function submitCompose(): Promise<void> {
   const draft = compose.value;
-  if (draft === null || draft.sending) return;
+  if (draft === null || draft.sending || draft.locked) return;
+  if (draft.conflict || draft.saveUnconfirmed) return;
   if (!commitAddresses('to') || !commitAddresses('cc') || !commitAddresses('bcc')) return;
   if (draft.to.length + draft.cc.length + draft.bcc.length === 0) {
     draft.error = 'Add at least one recipient.';
@@ -876,21 +1343,56 @@ async function submitCompose(): Promise<void> {
   draft.sending = true;
   draft.error = '';
   draft.unconfirmed = false;
-  const generationAtSend = draft.generation;
-  const accountAtSend = draft.accountId;
-  const kind = draft.kind;
+  clearSaveTimer();
+  if (saveFlight !== null) {
+    const saved = await saveFlight;
+    if (!saved && (compose.value?.conflict === true || compose.value?.saveUnconfirmed === true)) {
+      if (compose.value !== null) compose.value.sending = false;
+      return;
+    }
+  }
+  const current = compose.value;
+  if (current === null || current.locked || current.generation !== draft.generation) return;
+  if (current.attachments.length > 0 && current.draftId === null) {
+    const created = await saveCompose(current.generation);
+    if (!created) return;
+  }
+  const ready = compose.value;
+  if (ready === null || ready.generation !== draft.generation) return;
+  ready.sending = true;
+  const generationAtSend = ready.generation;
+  const accountAtSend = ready.accountId;
+  const kind = ready.kind;
   try {
-    const sent = await gmail().sendMessage({
-      accountId: draft.accountId,
-      kind: draft.kind,
-      threadId: draft.threadId,
-      messageId: draft.messageId,
-      to: draft.to,
-      cc: draft.cc,
-      bcc: draft.bcc,
-      subject: draft.subject,
-      body: draft.body
-    });
+    const sent =
+      ready.draftId === null
+        ? await gmail().sendMessage({
+            accountId: ready.accountId,
+            kind: ready.kind,
+            threadId: ready.threadId,
+            messageId: ready.messageId,
+            to: ready.to,
+            cc: ready.cc,
+            bcc: ready.bcc,
+            subject: ready.subject,
+            body: ready.body
+          })
+        : await gmail().sendDraft({
+            accountId: ready.accountId,
+            draftId: ready.draftId,
+            expectedMessageId: ready.expectedMessageId,
+            kind: ready.kind,
+            threadId: ready.threadId,
+            messageId: ready.messageId,
+            to: ready.to,
+            cc: ready.cc,
+            bcc: ready.bcc,
+            subject: ready.subject,
+            body: ready.body,
+            attachmentTokens: ready.attachments.map((file) => file.token),
+            replaceConfirmed: false,
+            composerGeneration: ready.generation
+          });
     if (
       compose.value === null ||
       compose.value.generation !== generationAtSend ||
@@ -910,10 +1412,9 @@ async function submitCompose(): Promise<void> {
     }
     if (activeQuery.value !== null) searchStale.value = true;
     else if (
-      kind !== 'reply' &&
-      kind !== 'reply-all' &&
-      labelId.value === 'SENT' &&
-      openId.value === null
+      openId.value === null &&
+      activeQuery.value === null &&
+      (labelId.value === 'SENT' || labelId.value === 'DRAFT')
     ) {
       void reloadPage();
     }
@@ -1015,6 +1516,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  clearSaveTimer();
   window.removeEventListener('beforeunload', warnBeforeUnload);
 });
 </script>
@@ -1376,6 +1878,15 @@ onUnmounted(() => {
             >
               <Star :size="16" :stroke-width="1.75" aria-hidden="true" />
             </button>
+            <button
+              v-if="item.labelIds.includes('DRAFT')"
+              class="control"
+              type="button"
+              @click="requestEdit(item)"
+            >
+              <File :size="16" :stroke-width="1.75" aria-hidden="true" />
+              Edit draft
+            </button>
             <button class="control" type="button" @click="requestSeed('reply', item)">
               <Reply :size="16" :stroke-width="1.75" aria-hidden="true" />
               Reply
@@ -1413,6 +1924,24 @@ onUnmounted(() => {
             >
               <Paperclip :size="16" :stroke-width="1.75" aria-hidden="true" />
               {{ attachment.fileName }} · {{ attachment.mimeType }} · {{ attachment.size }}
+              <button
+                v-if="attachment.attachmentId !== null || attachment.partId !== null"
+                class="control"
+                type="button"
+                :aria-busy="
+                  downloadKey ===
+                  `${item.id}:${attachment.partId ?? ''}:${attachment.attachmentId ?? ''}`
+                    ? 'true'
+                    : undefined
+                "
+                :disabled="
+                  downloadKey ===
+                  `${item.id}:${attachment.partId ?? ''}:${attachment.attachmentId ?? ''}`
+                "
+                @click="downloadAttachment(item.id, attachment)"
+              >
+                Download
+              </button>
             </li>
           </ul>
         </article>
@@ -1442,7 +1971,8 @@ onUnmounted(() => {
       aria-labelledby="compose-title"
       @keydown="onComposeKeydown"
     >
-      <h2 id="compose-title">{{ composeTitle(compose.kind) }}</h2>
+      <h2 id="compose-title">{{ compose.locked ? 'Draft' : composeTitle(compose.kind) }}</h2>
+      <p v-if="composeStatus" role="status">{{ composeStatus }}</p>
       <div class="compose-row">
         <span>From</span>
         <p>{{ compose.from }}</p>
@@ -1456,7 +1986,7 @@ onUnmounted(() => {
               class="control"
               type="button"
               :aria-label="`Remove ${address}`"
-              :disabled="compose.sending"
+              :disabled="compose.sending || compose.locked"
               @click="removeAddress('to', address)"
             >
               Remove
@@ -1469,7 +1999,7 @@ onUnmounted(() => {
             type="email"
             aria-label="To"
             :value="compose.toDraft"
-            :disabled="compose.sending"
+            :disabled="compose.sending || compose.locked"
             @input="setComposeInput('toDraft', $event)"
             @keydown.enter.prevent="commitAddresses('to')"
             @blur="commitAddresses('to')"
@@ -1504,7 +2034,7 @@ onUnmounted(() => {
               class="control"
               type="button"
               :aria-label="`Remove ${address}`"
-              :disabled="compose.sending"
+              :disabled="compose.sending || compose.locked"
               @click="removeAddress('cc', address)"
             >
               Remove
@@ -1516,7 +2046,7 @@ onUnmounted(() => {
             type="email"
             aria-label="Cc"
             :value="compose.ccDraft"
-            :disabled="compose.sending"
+            :disabled="compose.sending || compose.locked"
             @input="setComposeInput('ccDraft', $event)"
             @keydown.enter.prevent="commitAddresses('cc')"
             @blur="commitAddresses('cc')"
@@ -1533,7 +2063,7 @@ onUnmounted(() => {
               class="control"
               type="button"
               :aria-label="`Remove ${address}`"
-              :disabled="compose.sending"
+              :disabled="compose.sending || compose.locked"
               @click="removeAddress('bcc', address)"
             >
               Remove
@@ -1545,7 +2075,7 @@ onUnmounted(() => {
             type="email"
             aria-label="Bcc"
             :value="compose.bccDraft"
-            :disabled="compose.sending"
+            :disabled="compose.sending || compose.locked"
             @input="setComposeInput('bccDraft', $event)"
             @keydown.enter.prevent="commitAddresses('bcc')"
             @blur="commitAddresses('bcc')"
@@ -1563,24 +2093,73 @@ onUnmounted(() => {
           maxlength="998"
           aria-label="Subject"
           :value="compose.subject"
-          :disabled="compose.sending"
+          :disabled="compose.sending || compose.locked"
           @input="setComposeInput('subject', $event)"
         />
         <p v-else id="compose-subject">{{ compose.subject }}</p>
       </div>
+      <div
+        v-if="compose.readOnlyHtml"
+        class="mail-reading mail-body"
+        v-html="compose.readOnlyHtml"
+      />
       <textarea
+        v-else
         ref="composeBodyInput"
         class="field field-text compose-body"
         aria-label="Message"
         :value="compose.body"
-        :disabled="compose.sending"
+        :disabled="compose.sending || compose.locked"
         @input="setComposeInput('body', $event)"
         @keydown="onBodyKeydown"
       />
+      <div v-if="compose.attachments.length > 0" class="compose-addresses">
+        <span v-for="file in compose.attachments" :key="file.token" class="compose-chip">
+          <Paperclip :size="16" :stroke-width="1.75" aria-hidden="true" />
+          {{ file.fileName }} · {{ file.size }}
+          <button
+            class="control"
+            type="button"
+            :aria-label="`Remove ${file.fileName}`"
+            :disabled="compose.sending || compose.locked"
+            @click="removeFile(file.token)"
+          >
+            Remove
+          </button>
+        </span>
+      </div>
       <p v-if="compose.error" role="alert">{{ compose.error }}</p>
+      <div v-if="compose.conflict" class="compose-actions">
+        <button class="control" type="button" @click="reloadDraft">Reload Gmail version</button>
+        <button class="control control-danger" type="button" @click="overwriteDraft">
+          Overwrite Gmail draft
+        </button>
+      </div>
       <div class="compose-actions">
         <button v-if="compose.unconfirmed" class="control" type="button" @click="viewSent">
           Check Sent
+        </button>
+        <button v-if="compose.saveUnconfirmed" class="control" type="button" @click="viewDrafts">
+          Check Drafts
+        </button>
+        <button
+          v-if="!compose.locked"
+          class="control"
+          type="button"
+          :disabled="compose.sending"
+          @click="pickFiles"
+        >
+          <Paperclip :size="16" :stroke-width="1.75" aria-hidden="true" />
+          Attach
+        </button>
+        <button
+          v-if="compose.draftId !== null && !compose.locked"
+          class="control"
+          type="button"
+          :disabled="compose.sending"
+          @click="pendingDelete = true"
+        >
+          Delete draft
         </button>
         <button
           class="control"
@@ -1591,9 +2170,10 @@ onUnmounted(() => {
           Close
         </button>
         <button
+          v-if="!compose.locked"
           class="control control-accent"
           type="button"
-          :disabled="compose.sending"
+          :disabled="compose.sending || compose.conflict || compose.saveUnconfirmed"
           :aria-busy="compose.sending ? 'true' : undefined"
           @click="submitCompose"
         >
@@ -1603,15 +2183,31 @@ onUnmounted(() => {
       </div>
     </div>
     <div
+      v-if="pendingDelete && compose !== null"
+      class="mail-dialog mail-confirm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="delete-draft-title"
+      @keydown.esc.prevent="pendingDelete = false"
+    >
+      <h2 id="delete-draft-title">Delete this draft?</h2>
+      <p>Gmail will permanently delete this draft. This is not Trash.</p>
+      <button class="control" type="button" @click="pendingDelete = false">Keep</button>
+      <button class="control control-danger" type="button" @click="confirmDeleteDraft">
+        Delete
+      </button>
+    </div>
+    <div
       v-if="pendingDiscard !== null"
-      class="mail-dialog"
+      class="mail-dialog mail-confirm"
       role="dialog"
       aria-modal="true"
       aria-labelledby="discard-title"
       @keydown.esc.prevent="keepCompose"
     >
       <h2 id="discard-title">Discard this message?</h2>
-      <p>The unsent message will be lost.</p>
+      <p v-if="compose?.draftId">Unsaved changes will be lost. The saved Gmail draft will stay.</p>
+      <p v-else>The unsent message will be lost.</p>
       <button ref="keepComposeButton" class="control" type="button" @click="keepCompose">
         Keep editing
       </button>

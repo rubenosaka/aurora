@@ -20,10 +20,20 @@ import { OAuthFlowError } from '../oauth/errors.ts';
 import { type GoogleAccountService } from '../oauth/google-accounts.ts';
 import { PersistenceError } from '../persistence/errors.ts';
 import { buildOutgoingRaw } from './compose-mime.ts';
+import { createDraftActions } from './draft-actions.ts';
 import { GmailError } from './errors.ts';
 import { classifyGmailFailure, readLimitedBody, recordGmailFailure, retryDelay } from './http.ts';
 import { acceptExternalUrl } from './links.ts';
 import { decodeConversation, utf8Size } from './mime.ts';
+import {
+  type AttachmentDownloadRequest,
+  type AttachmentDropRequest,
+  type AttachmentPickRequest,
+  type DraftDeleteRequest,
+  type DraftOpenRequest,
+  type DraftSaveRequest,
+  type PickedAttachments
+} from '../../shared/mail-draft.ts';
 
 const gmailRoot = 'https://gmail.googleapis.com/gmail/v1/users/me';
 const listPayloadLimit = 512_000;
@@ -46,6 +56,9 @@ export interface GmailReaderDependencies {
   fetchImpl: typeof fetch;
   openExternal: (url: string) => Promise<void>;
   sleep?: (milliseconds: number) => Promise<void>;
+  pickFiles?: () => Promise<Array<{ name: string; bytes: Uint8Array }>>;
+  chooseSavePath?: (fileName: string) => Promise<string | null>;
+  writeSave?: (target: string, bytes: Uint8Array) => Promise<void>;
 }
 
 export interface GmailReader {
@@ -88,6 +101,21 @@ export interface GmailReader {
   ): Promise<{ threadId: string; messageId: string; starred: boolean }>;
   composeSeed(query: ComposeSeedQuery): Promise<ComposeSeed>;
   sendMessage(message: ComposeMessage): Promise<ComposeSent>;
+  saveDraft(
+    request: DraftSaveRequest
+  ): ReturnType<ReturnType<typeof createDraftActions>['saveDraft']>;
+  openDraft(
+    request: DraftOpenRequest
+  ): ReturnType<ReturnType<typeof createDraftActions>['openDraft']>;
+  deleteDraft(
+    request: DraftDeleteRequest
+  ): ReturnType<ReturnType<typeof createDraftActions>['deleteDraft']>;
+  sendDraft(
+    request: DraftSaveRequest
+  ): ReturnType<ReturnType<typeof createDraftActions>['sendDraft']>;
+  pickAttachments(request: AttachmentPickRequest): Promise<PickedAttachments>;
+  dropAttachment(request: AttachmentDropRequest): Promise<{ dropped: true }>;
+  downloadAttachment(request: AttachmentDownloadRequest): Promise<{ saved: boolean }>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -368,10 +396,10 @@ async function mapLimit<T, R>(
 }
 
 interface GmailRequest {
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   body?: string;
   mutation?: boolean;
-  delivery?: 'send';
+  delivery?: 'send' | 'save' | 'create';
 }
 
 const readRequest: GmailRequest = { method: 'GET' };
@@ -403,14 +431,15 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
         signal: AbortSignal.timeout(10_000)
       });
     } catch {
-      if (request.delivery === 'send') throw new GmailError('send-unconfirmed');
+      if (request.delivery !== undefined) throw lostDelivery(request.delivery, null);
       throw new GmailError('network');
     }
     let bytes: Uint8Array;
     try {
       bytes = await readLimitedBody(response);
     } catch (error) {
-      if (request.delivery === 'send') throw new GmailError('send-unconfirmed', response.status);
+      if (error instanceof GmailError && error.code === 'too-large') throw error;
+      if (request.delivery !== undefined) throw lostDelivery(request.delivery, response.status);
       throw error;
     }
     let payload: unknown = null;
@@ -418,18 +447,20 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
       try {
         payload = JSON.parse(Buffer.from(bytes).toString('utf8')) as unknown;
       } catch {
-        if (request.delivery === 'send') throw new GmailError('send-unconfirmed', response.status);
+        if (request.delivery !== undefined) throw lostDelivery(request.delivery, response.status);
         if (response.ok) throw new GmailError('unavailable', response.status);
         payload = null;
       }
     }
     if (response.ok) {
       if (request.delivery === 'send') return acceptedSend(payload, response.status);
+      if (request.method === 'DELETE' && payload === null) return {};
       if (payload === null) throw new GmailError('unavailable', response.status);
       return payload;
     }
     const failure = classifyGmailFailure(response.status, payload);
-    if (request.delivery === 'send') throw sendFailure(response.status, failure);
+    if (request.delivery !== undefined)
+      throw deliveryFailure(request.delivery, response.status, failure);
     const retry =
       attempt === 0 &&
       (response.status === 500 || response.status === 503 || failure.code === 'rate-limited');
@@ -492,6 +523,18 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
     guard(value, listPayloadLimit);
     return labels;
   }
+
+  const drafts = createDraftActions({
+    authed,
+    requireGrant,
+    senderIdentity,
+    withRead,
+    busySends,
+    loadSource: loadComposeSource,
+    pickFiles: deps.pickFiles,
+    chooseSavePath: deps.chooseSavePath,
+    writeSave: deps.writeSave
+  });
 
   return {
     async listLabels(accountId) {
@@ -605,6 +648,27 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
     },
     sendMessage(message) {
       return deliverMessage(message);
+    },
+    saveDraft(request) {
+      return drafts.saveDraft(request);
+    },
+    openDraft(request) {
+      return drafts.openDraft(request);
+    },
+    deleteDraft(request) {
+      return drafts.deleteDraft(request);
+    },
+    sendDraft(request) {
+      return drafts.sendDraft(request);
+    },
+    pickAttachments(request) {
+      return drafts.pickAttachments(request);
+    },
+    dropAttachment(request) {
+      return drafts.dropAttachment(request);
+    },
+    downloadAttachment(request) {
+      return drafts.downloadAttachment(request);
     }
   };
 
@@ -898,14 +962,21 @@ function acceptedSend(payload: unknown, status: number): unknown {
   return payload;
 }
 
-function sendFailure(
+function lostDelivery(delivery: 'send' | 'save' | 'create', status: number | null): GmailError {
+  if (delivery === 'send') return new GmailError('send-unconfirmed', status);
+  return new GmailError('save-unconfirmed', status);
+}
+
+function deliveryFailure(
+  delivery: 'send' | 'save' | 'create',
   status: number,
   failure: { code: GmailError['code']; reason: string | null }
 ): GmailError {
+  const lost = delivery === 'send' ? 'send-unconfirmed' : 'save-unconfirmed';
   if (status === 401) return new GmailError('gmail-rejected', 401, failure.reason);
   if (status === 429 || status === 500 || status === 503 || failure.code === 'rate-limited') {
     recordGmailFailure(status, failure.reason);
-    return new GmailError('send-unconfirmed', status, failure.reason);
+    return new GmailError(lost, status, failure.reason);
   }
   if (status === 404) {
     recordGmailFailure(status, failure.reason);
@@ -924,7 +995,7 @@ function sendFailure(
     return new GmailError('permission-denied', status, failure.reason);
   }
   recordGmailFailure(status, failure.reason);
-  if (status >= 500) return new GmailError('send-unconfirmed', status, failure.reason);
+  if (status >= 500) return new GmailError(lost, status, failure.reason);
   if (status === 400) return new GmailError('gmail-rejected', status, failure.reason);
   return new GmailError('gmail-rejected', status, failure.reason);
 }

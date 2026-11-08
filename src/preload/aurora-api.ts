@@ -8,7 +8,14 @@ import {
 import {
   gmailAddLabelChannel,
   gmailArchiveThreadChannel,
+  gmailAttachmentDownloadChannel,
+  gmailAttachmentDropChannel,
+  gmailAttachmentPickChannel,
   gmailComposeSeedChannel,
+  gmailDraftDeleteChannel,
+  gmailDraftOpenChannel,
+  gmailDraftSaveChannel,
+  gmailDraftSendChannel,
   gmailLabelsChannel,
   gmailMarkReadChannel,
   gmailMarkUnreadChannel,
@@ -49,6 +56,20 @@ import {
   type ComposeSeedQuery,
   type ComposeSent
 } from '../shared/mail-compose.ts';
+import {
+  parseAttachmentDropped,
+  parseAttachmentSaved,
+  parseDraftDeleted,
+  parseDraftOpened,
+  parseDraftSaved,
+  parsePickedAttachments,
+  type AttachmentDownloadRequest,
+  type AttachmentDropRequest,
+  type AttachmentPickRequest,
+  type DraftDeleteRequest,
+  type DraftOpenRequest,
+  type DraftSaveRequest
+} from '../shared/mail-draft.ts';
 import {
   type GoogleResult,
   googleAccountsCancelChannel,
@@ -276,6 +297,27 @@ export function createAuroraApi(invoke: AuroraInvoke): AuroraBridge {
       },
       sendMessage(message: ComposeMessage): Promise<GmailResult<ComposeSent>> {
         return gmailAction(invoke, gmailSendMessageChannel, message, parseComposeSent);
+      },
+      saveDraft(request: DraftSaveRequest) {
+        return gmailAction(invoke, gmailDraftSaveChannel, request, parseDraftSaved);
+      },
+      openDraft(request: DraftOpenRequest) {
+        return gmailAction(invoke, gmailDraftOpenChannel, request, parseDraftOpened);
+      },
+      deleteDraft(request: DraftDeleteRequest) {
+        return gmailAction(invoke, gmailDraftDeleteChannel, request, parseDraftDeleted);
+      },
+      sendDraft(request: DraftSaveRequest): Promise<GmailResult<ComposeSent>> {
+        return gmailAction(invoke, gmailDraftSendChannel, request, parseComposeSent);
+      },
+      pickAttachments(request: AttachmentPickRequest) {
+        return gmailAction(invoke, gmailAttachmentPickChannel, request, parsePickedAttachments);
+      },
+      dropAttachment(request: AttachmentDropRequest) {
+        return gmailAction(invoke, gmailAttachmentDropChannel, request, parseAttachmentDropped);
+      },
+      downloadAttachment(request: AttachmentDownloadRequest) {
+        return gmailAction(invoke, gmailAttachmentDownloadChannel, request, parseAttachmentSaved);
       }
     })
   });

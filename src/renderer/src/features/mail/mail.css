@@ -364,6 +364,10 @@
   transform: translate(-50%, -50%);
 }
 
+.mail-confirm {
+  z-index: 40;
+}
+
 .mail-composer {
   z-index: 30;
   width: min(560px, calc(100% - 32px));

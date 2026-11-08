@@ -36,6 +36,75 @@ describe('outgoing mime', () => {
       'Hola, café\r\n'
     );
     assert.equal(formatAddress('倪', 'ni@example.com').startsWith('=?UTF-8?B?'), true);
+    const longName = decode(
+      buildOutgoingRaw({
+        fromName: 'á'.repeat(40),
+        fromEmail: 'ada@example.com',
+        recipients: { to: ['bob@example.com'], cc: [], bcc: [] },
+        subject: 'One two three four five six seven eight nine ten',
+        body: 'Hi',
+        inReplyTo: null,
+        references: [],
+        now
+      })
+    );
+    assert.equal(longName.split('=?UTF-8?B?').length > 2, true);
+  });
+
+  it('builds multipart mail and encodes a non-ASCII file name without a new header', () => {
+    const raw = buildOutgoingRaw({
+      fromName: null,
+      fromEmail: 'ada@example.com',
+      recipients: { to: ['bob@example.com'], cc: [], bcc: [] },
+      subject: 'Files',
+      body: 'See attached',
+      inReplyTo: null,
+      references: [],
+      now,
+      files: [
+        { fileName: 'notes.txt', mediaType: 'text/plain', bytes: Buffer.from('one') },
+        { fileName: 'café.pdf', mediaType: 'application/pdf', bytes: Buffer.from('two') }
+      ]
+    });
+    const message = decode(raw);
+    assert.equal(message.includes('multipart/mixed'), true);
+    assert.equal(message.includes('filename="notes.txt"'), true);
+    assert.equal(message.includes("filename*=UTF-8''"), true);
+    assert.equal(message.includes('\r\nBcc:'), false);
+    assert.throws(
+      () =>
+        buildOutgoingRaw({
+          fromName: null,
+          fromEmail: 'ada@example.com',
+          recipients: { to: ['bob@example.com'], cc: [], bcc: [] },
+          subject: 'Files',
+          body: 'See attached',
+          inReplyTo: null,
+          references: [],
+          now,
+          files: [
+            {
+              fileName: 'bad\r\nBcc: eve@example.com',
+              mediaType: 'text/plain',
+              bytes: Buffer.from('x')
+            }
+          ]
+        }),
+      (error: unknown) => error instanceof GmailError && error.code === 'invalid-request'
+    );
+    const plain = decode(
+      buildOutgoingRaw({
+        fromName: null,
+        fromEmail: 'ada@example.com',
+        recipients: { to: ['bob@example.com'], cc: [], bcc: [] },
+        subject: 'Plain',
+        body: 'Only text',
+        inReplyTo: null,
+        references: [],
+        now
+      })
+    );
+    assert.equal(plain.includes('multipart'), false);
   });
 
   it('does not let a subject or display name add a header', () => {

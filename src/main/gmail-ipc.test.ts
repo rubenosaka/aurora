@@ -6,6 +6,13 @@ import { type GmailReader } from './gmail/reader.ts';
 import { attachGmailIpc, handleGmailChannel } from './gmail-ipc.ts';
 import { type SenderSnapshot } from './trusted-sender.ts';
 import {
+  gmailAttachmentDownloadChannel,
+  gmailAttachmentDropChannel,
+  gmailAttachmentPickChannel,
+  gmailDraftDeleteChannel,
+  gmailDraftOpenChannel,
+  gmailDraftSaveChannel,
+  gmailDraftSendChannel,
   gmailLabelsChannel,
   gmailOpenLinkChannel,
   gmailSendMessageChannel,
@@ -57,6 +64,26 @@ function reader(overrides: Partial<GmailReader> = {}): GmailReader {
     }),
     composeSeed: async () => ({ to: [], cc: [], subject: '' }),
     sendMessage: async () => ({ id: 'messagesent', threadId: null }),
+    saveDraft: async () => ({ draftId: 'draftone', messageId: 'messageone', threadId: null }),
+    openDraft: async () => ({
+      locked: false,
+      draftId: 'draftone',
+      messageId: 'messageone',
+      threadId: null,
+      kind: 'new' as const,
+      to: [],
+      cc: [],
+      bcc: [],
+      subject: '',
+      body: '',
+      subjectLocked: false,
+      attachments: []
+    }),
+    deleteDraft: async () => ({ deleted: true as const }),
+    sendDraft: async () => ({ id: 'messagesent', threadId: null }),
+    pickAttachments: async () => ({ attachments: [] }),
+    dropAttachment: async () => ({ dropped: true as const }),
+    downloadAttachment: async () => ({ saved: true }),
     ...overrides
   };
 }
@@ -214,6 +241,134 @@ describe('gmail ipc', () => {
         })
       ),
       { ok: false, error: { code: 'invalid-response' } }
+    );
+  });
+
+  it('saves, opens, deletes, sends, and transfers attachments on their own channels', async () => {
+    const save = {
+      accountId,
+      draftId: null,
+      expectedMessageId: null,
+      kind: 'new' as const,
+      threadId: null,
+      messageId: null,
+      to: ['bob@example.com'],
+      cc: [],
+      bcc: [],
+      subject: 'Hello',
+      body: 'Hi',
+      attachmentTokens: [],
+      replaceConfirmed: false,
+      composerGeneration: 1
+    };
+    assert.deepEqual(await handleGmailChannel(gmailDraftSaveChannel, sender(), [save], reader()), {
+      ok: true,
+      value: { draftId: 'draftone', messageId: 'messageone', threadId: null }
+    });
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailDraftSaveChannel,
+        sender(),
+        [{ ...save, raw: 'nope' }],
+        reader()
+      ),
+      { ok: false, error: { code: 'invalid-request' } }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailDraftOpenChannel,
+        sender(),
+        [
+          {
+            accountId,
+            threadId: 'threadsame',
+            messageId: 'messageone',
+            composerGeneration: 1
+          }
+        ],
+        reader()
+      ),
+      {
+        ok: true,
+        value: {
+          locked: false,
+          draftId: 'draftone',
+          messageId: 'messageone',
+          threadId: null,
+          kind: 'new',
+          to: [],
+          cc: [],
+          bcc: [],
+          subject: '',
+          body: '',
+          subjectLocked: false,
+          attachments: []
+        }
+      }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailDraftDeleteChannel,
+        sender(),
+        [{ accountId, draftId: 'draftone', expectedMessageId: 'messageone' }],
+        reader()
+      ),
+      { ok: true, value: { deleted: true } }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailDraftSendChannel,
+        sender(),
+        [{ ...save, draftId: 'draftone', expectedMessageId: 'messageone', raw: 'nope' }],
+        reader()
+      ),
+      { ok: false, error: { code: 'invalid-request' } }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailDraftSendChannel,
+        sender(),
+        [{ ...save, draftId: 'draftone', expectedMessageId: 'messageone' }],
+        reader()
+      ),
+      { ok: true, value: { id: 'messagesent', threadId: null } }
+    );
+    const token = 'A'.repeat(32);
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailAttachmentPickChannel,
+        sender(),
+        [{ accountId, composerGeneration: 1 }],
+        reader()
+      ),
+      { ok: true, value: { attachments: [] } }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailAttachmentDropChannel,
+        sender(),
+        [{ accountId, composerGeneration: 1, token }],
+        reader()
+      ),
+      { ok: true, value: { dropped: true } }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailAttachmentDownloadChannel,
+        sender(),
+        [{ accountId, messageId: 'messageone', partId: '1', attachmentId: null }],
+        reader()
+      ),
+      { ok: true, value: { saved: true } }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailAttachmentDownloadChannel,
+        sender(),
+        [{ accountId, messageId: 'messageone', partId: '../1', attachmentId: null }],
+        reader()
+      ),
+      { ok: false, error: { code: 'invalid-request' } }
     );
   });
 });

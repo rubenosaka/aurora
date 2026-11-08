@@ -6,8 +6,15 @@ import { isGoogleAccountId } from '../shared/google-accounts.ts';
 import {
   gmailAddLabelChannel,
   gmailArchiveThreadChannel,
+  gmailAttachmentDownloadChannel,
+  gmailAttachmentDropChannel,
+  gmailAttachmentPickChannel,
   gmailComposeSeedChannel,
   gmailChannels,
+  gmailDraftDeleteChannel,
+  gmailDraftOpenChannel,
+  gmailDraftSaveChannel,
+  gmailDraftSendChannel,
   gmailLabelsChannel,
   gmailMarkReadChannel,
   gmailMarkUnreadChannel,
@@ -39,6 +46,20 @@ import {
   parseComposeSeedQuery,
   parseComposeSent
 } from '../shared/mail-compose.ts';
+import {
+  parseAttachmentDownload,
+  parseAttachmentDrop,
+  parseAttachmentDropped,
+  parseAttachmentPick,
+  parseAttachmentSaved,
+  parseDraftDelete,
+  parseDraftDeleted,
+  parseDraftOpen,
+  parseDraftOpened,
+  parseDraftSave,
+  parseDraftSaved,
+  parsePickedAttachments
+} from '../shared/mail-draft.ts';
 
 type GmailIpcValue =
   | Awaited<ReturnType<GmailReader['listLabels']>>
@@ -50,7 +71,14 @@ type GmailIpcValue =
   | Awaited<ReturnType<GmailReader['addLabel']>>
   | Awaited<ReturnType<GmailReader['starMessage']>>
   | Awaited<ReturnType<GmailReader['composeSeed']>>
-  | Awaited<ReturnType<GmailReader['sendMessage']>>;
+  | Awaited<ReturnType<GmailReader['sendMessage']>>
+  | Awaited<ReturnType<GmailReader['saveDraft']>>
+  | Awaited<ReturnType<GmailReader['openDraft']>>
+  | Awaited<ReturnType<GmailReader['deleteDraft']>>
+  | Awaited<ReturnType<GmailReader['sendDraft']>>
+  | Awaited<ReturnType<GmailReader['pickAttachments']>>
+  | Awaited<ReturnType<GmailReader['dropAttachment']>>
+  | Awaited<ReturnType<GmailReader['downloadAttachment']>>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -236,6 +264,66 @@ export async function handleGmailChannel(
       if (message === null) return rejected('invalid-request');
       const value = await reader.sendMessage(message);
       if (parseComposeSent(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailDraftSaveChannel || channel === gmailDraftSendChannel) {
+      if (args.length !== 1 || parseDraftSave(args[0]) === null) return rejected('invalid-request');
+      const request = parseDraftSave(args[0]);
+      if (request === null) return rejected('invalid-request');
+      if (channel === gmailDraftSaveChannel) {
+        const value = await reader.saveDraft(request);
+        if (parseDraftSaved(value) === null) return rejected('invalid-response');
+        return { ok: true, value };
+      }
+      const value = await reader.sendDraft(request);
+      if (parseComposeSent(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailDraftOpenChannel) {
+      if (args.length !== 1 || parseDraftOpen(args[0]) === null) return rejected('invalid-request');
+      const request = parseDraftOpen(args[0]);
+      if (request === null) return rejected('invalid-request');
+      const value = await reader.openDraft(request);
+      if (parseDraftOpened(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailDraftDeleteChannel) {
+      if (args.length !== 1 || parseDraftDelete(args[0]) === null)
+        return rejected('invalid-request');
+      const request = parseDraftDelete(args[0]);
+      if (request === null) return rejected('invalid-request');
+      const value = await reader.deleteDraft(request);
+      if (parseDraftDeleted(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailAttachmentPickChannel) {
+      if (args.length !== 1 || parseAttachmentPick(args[0]) === null) {
+        return rejected('invalid-request');
+      }
+      const request = parseAttachmentPick(args[0]);
+      if (request === null) return rejected('invalid-request');
+      const value = await reader.pickAttachments(request);
+      if (parsePickedAttachments(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailAttachmentDropChannel) {
+      if (args.length !== 1 || parseAttachmentDrop(args[0]) === null) {
+        return rejected('invalid-request');
+      }
+      const request = parseAttachmentDrop(args[0]);
+      if (request === null) return rejected('invalid-request');
+      const value = await reader.dropAttachment(request);
+      if (parseAttachmentDropped(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailAttachmentDownloadChannel) {
+      if (args.length !== 1 || parseAttachmentDownload(args[0]) === null) {
+        return rejected('invalid-request');
+      }
+      const request = parseAttachmentDownload(args[0]);
+      if (request === null) return rejected('invalid-request');
+      const value = await reader.downloadAttachment(request);
+      if (parseAttachmentSaved(value) === null) return rejected('invalid-response');
       return { ok: true, value };
     }
     if (channel === gmailOpenLinkChannel) {

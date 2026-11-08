@@ -35,7 +35,14 @@ function gmail(): GmailBridge {
     starMessage: async () => ({ ok: false, error: { code: 'internal' } }),
     unstarMessage: async () => ({ ok: false, error: { code: 'internal' } }),
     composeSeed: async () => ({ ok: false, error: { code: 'internal' } }),
-    sendMessage: async () => ({ ok: false, error: { code: 'internal' } })
+    sendMessage: async () => ({ ok: false, error: { code: 'internal' } }),
+    saveDraft: async () => ({ ok: false, error: { code: 'internal' } }),
+    openDraft: async () => ({ ok: false, error: { code: 'internal' } }),
+    deleteDraft: async () => ({ ok: false, error: { code: 'internal' } }),
+    sendDraft: async () => ({ ok: false, error: { code: 'internal' } }),
+    pickAttachments: async () => ({ ok: false, error: { code: 'internal' } }),
+    dropAttachment: async () => ({ ok: false, error: { code: 'internal' } }),
+    downloadAttachment: async () => ({ ok: false, error: { code: 'internal' } })
   };
 }
 

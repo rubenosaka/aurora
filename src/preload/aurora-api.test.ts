@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { appInfoChannel, type AppInfo } from '../shared/app-info.ts';
-import { gmailOpenLinkChannel, gmailThreadChannel, gmailThreadsChannel } from '../shared/gmail.ts';
+import {
+  gmailAttachmentDownloadChannel,
+  gmailAttachmentDropChannel,
+  gmailAttachmentPickChannel,
+  gmailDraftDeleteChannel,
+  gmailDraftOpenChannel,
+  gmailDraftSaveChannel,
+  gmailDraftSendChannel,
+  gmailOpenLinkChannel,
+  gmailThreadChannel,
+  gmailThreadsChannel
+} from '../shared/gmail.ts';
 import {
   googleAccountsCancelChannel,
   googleAccountsConnectChannel,
@@ -44,7 +55,14 @@ describe('createAuroraApi', () => {
       'starMessage',
       'unstarMessage',
       'composeSeed',
-      'sendMessage'
+      'sendMessage',
+      'saveDraft',
+      'openDraft',
+      'deleteDraft',
+      'sendDraft',
+      'pickAttachments',
+      'dropAttachment',
+      'downloadAttachment'
     ]);
     assert.equal(Object.isFrozen(api), true);
     assert.equal(Object.isFrozen(api.app), true);
@@ -206,6 +224,114 @@ describe('createAuroraApi', () => {
     );
     assert.equal((await reading.gmail.readThread(accountId, 'threadsame')).ok, true);
     assert.equal((await reading.gmail.listLabels(accountId)).ok, false);
+    const drafts = createAuroraApi(async (channel: unknown) => {
+      if (channel === gmailDraftSaveChannel) {
+        return {
+          ok: true,
+          value: { draftId: 'draftone', messageId: 'messageone', threadId: null }
+        };
+      }
+      if (channel === gmailDraftOpenChannel) {
+        return {
+          ok: true,
+          value: {
+            locked: false,
+            draftId: 'draftone',
+            messageId: 'messageone',
+            threadId: null,
+            kind: 'new',
+            to: [],
+            cc: [],
+            bcc: [],
+            subject: '',
+            body: '',
+            subjectLocked: false,
+            attachments: []
+          }
+        };
+      }
+      if (channel === gmailDraftDeleteChannel) return { ok: true, value: { deleted: true } };
+      if (channel === gmailDraftSendChannel) {
+        return { ok: true, value: { id: 'messagesent', threadId: null } };
+      }
+      if (channel === gmailAttachmentPickChannel) return { ok: true, value: { attachments: [] } };
+      if (channel === gmailAttachmentDropChannel) return { ok: true, value: { dropped: true } };
+      if (channel === gmailAttachmentDownloadChannel) return { ok: true, value: { saved: false } };
+      return { ok: false, error: { code: 'internal' } };
+    });
+    const save = {
+      accountId,
+      draftId: null,
+      expectedMessageId: null,
+      kind: 'new' as const,
+      threadId: null,
+      messageId: null,
+      to: ['bob@example.com'],
+      cc: [],
+      bcc: [],
+      subject: 'Hello',
+      body: 'Hi',
+      attachmentTokens: [],
+      replaceConfirmed: false,
+      composerGeneration: 1
+    };
+    assert.equal((await drafts.gmail.saveDraft(save)).ok, true);
+    assert.equal(
+      (
+        await drafts.gmail.openDraft({
+          accountId,
+          threadId: 'threadsame',
+          messageId: 'messageone',
+          composerGeneration: 1
+        })
+      ).ok,
+      true
+    );
+    assert.equal(
+      (
+        await drafts.gmail.deleteDraft({
+          accountId,
+          draftId: 'draftone',
+          expectedMessageId: 'messageone'
+        })
+      ).ok,
+      true
+    );
+    assert.equal(
+      (
+        await drafts.gmail.sendDraft({
+          ...save,
+          draftId: 'draftone',
+          expectedMessageId: 'messageone'
+        })
+      ).ok,
+      true
+    );
+    assert.equal(
+      (await drafts.gmail.pickAttachments({ accountId, composerGeneration: 1 })).ok,
+      true
+    );
+    assert.equal(
+      (
+        await drafts.gmail.dropAttachment({
+          accountId,
+          composerGeneration: 1,
+          token: 'A'.repeat(32)
+        })
+      ).ok,
+      true
+    );
+    assert.equal(
+      (
+        await drafts.gmail.downloadAttachment({
+          accountId,
+          messageId: 'messageone',
+          partId: '1',
+          attachmentId: null
+        })
+      ).ok,
+      true
+    );
   });
 
   it('rejects an invalid IPC result envelope', async () => {

@@ -13,6 +13,8 @@ export const gmailServiceCodes = [
   'insufficient-scope',
   'gmail-rejected',
   'send-unconfirmed',
+  'save-unconfirmed',
+  'draft-conflict',
   'internal'
 ] as const;
 
@@ -34,6 +36,9 @@ const sentences: Record<GmailServiceCode, string> = {
   'gmail-rejected': 'Gmail refused this request.',
   'send-unconfirmed':
     'Aurora could not confirm whether Gmail sent this message. Check Sent before sending it again.',
+  'save-unconfirmed':
+    'Aurora could not confirm whether Gmail saved this draft. Check Drafts before saving it again.',
+  'draft-conflict': 'This draft changed in Gmail. Aurora did not overwrite it.',
   internal: 'Request failed.'
 };
 

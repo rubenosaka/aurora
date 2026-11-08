@@ -134,7 +134,8 @@ function without(values: readonly string[], banned: readonly string[]): string[]
 export function collectRecipients(
   to: readonly string[],
   cc: readonly string[],
-  bcc: readonly string[]
+  bcc: readonly string[],
+  allowEmpty = false
 ): ComposeRecipients | null {
   const seen = new Set<string>();
   const take = (values: readonly string[], into: string[]): boolean => {
@@ -152,7 +153,7 @@ export function collectRecipients(
   const nextCc: string[] = [];
   const nextBcc: string[] = [];
   if (!take(to, nextTo) || !take(cc, nextCc) || !take(bcc, nextBcc)) return null;
-  if (seen.size === 0) return null;
+  if (seen.size === 0 && !allowEmpty) return null;
   return { to: nextTo, cc: nextCc, bcc: nextBcc };
 }
 

@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { GmailIpcError, type GmailApi, type GmailThreadList } from '../../../../shared/gmail.ts';
 import { type GoogleAccountSummary, type GoogleApi } from '../../../../shared/google-accounts.ts';
 import { createAppRouter } from '../../app/router.ts';
@@ -44,6 +44,13 @@ function mailActions(): Pick<
   | 'unstarMessage'
   | 'composeSeed'
   | 'sendMessage'
+  | 'saveDraft'
+  | 'openDraft'
+  | 'deleteDraft'
+  | 'sendDraft'
+  | 'pickAttachments'
+  | 'dropAttachment'
+  | 'downloadAttachment'
 > {
   return {
     markRead: async () => ({ threadId: 'threadsame', unread: false }),
@@ -60,7 +67,31 @@ function mailActions(): Pick<
       starred: false
     }),
     composeSeed: async () => ({ to: ['bob@example.com'], cc: [], subject: 'Re: Hello' }),
-    sendMessage: async () => ({ id: 'messagesent', threadId: 'threadsame' })
+    sendMessage: async () => ({ id: 'messagesent', threadId: 'threadsame' }),
+    saveDraft: async () => ({
+      draftId: 'draftone',
+      messageId: 'messagedraft',
+      threadId: null
+    }),
+    openDraft: async () => ({
+      locked: false,
+      draftId: 'draftone',
+      messageId: 'messageone',
+      threadId: null,
+      kind: 'new' as const,
+      to: [],
+      cc: [],
+      bcc: [],
+      subject: 'Saved',
+      body: 'Hello',
+      subjectLocked: false,
+      attachments: []
+    }),
+    deleteDraft: async () => ({ deleted: true as const }),
+    sendDraft: async () => ({ id: 'messagesent', threadId: 'threadsame' }),
+    pickAttachments: async () => ({ attachments: [] }),
+    dropAttachment: async () => ({ dropped: true as const }),
+    downloadAttachment: async () => ({ saved: true })
   };
 }
 
@@ -747,5 +778,315 @@ describe('MailView', () => {
     await readonly.get('button').trigger('click');
     expect(readonly.find('[aria-labelledby="compose-title"]').exists()).toBe(false);
     expect(readonly.text()).toContain('Reconnect this Google account before changing mail.');
+  });
+
+  it('autosaves once after two quiet seconds and does not delete on close', async () => {
+    vi.useFakeTimers();
+    try {
+      const saves: Array<{ draftId: string | null; body: string }> = [];
+      let deletes = 0;
+      const gmailApi: GmailApi = {
+        ...mailActions(),
+        listLabels: async () => labels,
+        listThreads: async () => ({ threads: [], nextPageToken: null }),
+        readThread: async () => ({ id: 'threadsame', messages: [] }),
+        openLink: async () => ({ opened: true }),
+        saveDraft: async (request) => {
+          saves.push({ draftId: request.draftId, body: request.body });
+          return { draftId: 'draftone', messageId: 'messageone', threadId: 'threaddraft' };
+        },
+        deleteDraft: async () => {
+          deletes += 1;
+          return { deleted: true };
+        }
+      };
+      const wrapper = mountMail({ props: { googleApi: accountsApi([ada]), gmailApi } });
+      await flushPromises();
+      await wrapper.get('button').trigger('click');
+      const composer = wrapper.get('[aria-labelledby="compose-title"]');
+      await composer.get('[aria-label="Message"]').setValue('Hello');
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(saves).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(1);
+      await flushPromises();
+      expect(saves).toEqual([{ draftId: null, body: 'Hello' }]);
+      expect(composer.text()).toContain('Saved');
+      await composer.get('[aria-label="Message"]').setValue('Hello!');
+      await vi.advanceTimersByTimeAsync(500);
+      await composer.get('[aria-label="Message"]').setValue('Hello again');
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(saves).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await flushPromises();
+      expect(saves[1]).toEqual({ draftId: 'draftone', body: 'Hello again' });
+      await composer
+        .findAll('button')
+        .find((button) => button.text() === 'Close')
+        ?.trigger('click');
+      expect(wrapper.find('[aria-labelledby="compose-title"]').exists()).toBe(false);
+      expect(deletes).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not create another draft after an unconfirmed create', async () => {
+    vi.useFakeTimers();
+    try {
+      let saves = 0;
+      const gmailApi: GmailApi = {
+        ...mailActions(),
+        listLabels: async () => labels,
+        listThreads: async () => ({ threads: [], nextPageToken: null }),
+        readThread: async () => ({ id: 'threadsame', messages: [] }),
+        openLink: async () => ({ opened: true }),
+        saveDraft: async () => {
+          saves += 1;
+          throw new GmailIpcError('save-unconfirmed');
+        }
+      };
+      const wrapper = mountMail({ props: { googleApi: accountsApi([ada]), gmailApi } });
+      await flushPromises();
+      await wrapper.get('button').trigger('click');
+      const composer = wrapper.get('[aria-labelledby="compose-title"]');
+      await composer.get('[aria-label="Message"]').setValue('Hello');
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushPromises();
+      expect(saves).toBe(1);
+      expect(composer.text()).toContain('Check Drafts');
+      await composer.get('[aria-label="Message"]').setValue('Hello again');
+      await vi.advanceTimersByTimeAsync(5000);
+      await flushPromises();
+      expect(saves).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops autosave on a conflict and overwrites only from the explicit action', async () => {
+    vi.useFakeTimers();
+    try {
+      const confirmed: boolean[] = [];
+      let conflict = false;
+      const opens: string[] = [];
+      const gmailApi: GmailApi = {
+        ...mailActions(),
+        listLabels: async () => labels,
+        listThreads: async () => ({ threads: [], nextPageToken: null }),
+        readThread: async () => ({ id: 'threadsame', messages: [] }),
+        openLink: async () => ({ opened: true }),
+        saveDraft: async (request) => {
+          confirmed.push(request.replaceConfirmed);
+          if (conflict && request.replaceConfirmed !== true)
+            throw new GmailIpcError('draft-conflict');
+          return {
+            draftId: 'draftone',
+            messageId: request.replaceConfirmed ? 'messagetwo' : 'messageone',
+            threadId: 'threaddraft'
+          };
+        },
+        openDraft: async (request) => {
+          opens.push(request.threadId);
+          return {
+            locked: false,
+            draftId: 'draftone',
+            messageId: 'messageremote',
+            threadId: null,
+            kind: 'new' as const,
+            to: ['bob@example.com'],
+            cc: [],
+            bcc: [],
+            subject: 'Remote',
+            body: 'From Gmail',
+            subjectLocked: false,
+            attachments: []
+          };
+        }
+      };
+      const wrapper = mountMail({ props: { googleApi: accountsApi([ada]), gmailApi } });
+      await flushPromises();
+      await wrapper.get('button').trigger('click');
+      const composer = wrapper.get('[aria-labelledby="compose-title"]');
+      await composer.get('[aria-label="Message"]').setValue('Local');
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushPromises();
+      conflict = true;
+      await composer.get('[aria-label="Message"]').setValue('Local edit');
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushPromises();
+      expect(composer.text()).toContain('This draft changed in Gmail');
+      const before = confirmed.length;
+      await composer.get('[aria-label="Message"]').setValue('Still local');
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushPromises();
+      expect(confirmed).toHaveLength(before);
+      await composer
+        .findAll('button')
+        .find((button) => button.text() === 'Overwrite Gmail draft')
+        ?.trigger('click');
+      await flushPromises();
+      expect(confirmed.at(-1)).toBe(true);
+      conflict = true;
+      await composer.get('[aria-label="Message"]').setValue('Edited after overwrite');
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushPromises();
+      await composer
+        .findAll('button')
+        .find((button) => button.text() === 'Reload Gmail version')
+        ?.trigger('click');
+      await flushPromises();
+      expect(opens).toEqual(['threaddraft']);
+      expect(wrapper.get('[aria-label="Message"]').element).toHaveProperty('value', 'From Gmail');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps an HTML draft read-only and asks before a permanent delete', async () => {
+    let saves = 0;
+    let deletes = 0;
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => labels,
+      listThreads: async () => ({
+        threads: [
+          {
+            id: 'threaddraft',
+            subject: 'Rich',
+            from: 'Ada',
+            date: '2026-11-02T12:00:00.000Z',
+            snippet: 'Hi',
+            unread: false,
+            starred: false
+          }
+        ],
+        nextPageToken: null
+      }),
+      readThread: async () => ({
+        id: 'threaddraft',
+        messages: [
+          {
+            id: 'messageone',
+            from: 'Ada',
+            to: 'bob@example.com',
+            cc: null,
+            bcc: null,
+            subject: 'Rich',
+            date: '2026-11-02T12:00:00.000Z',
+            unread: false,
+            starred: false,
+            labelIds: ['DRAFT'],
+            text: 'Hi',
+            html: '<p>Hi</p>',
+            imagesOmitted: false,
+            attachments: [
+              {
+                fileName: 'notes.txt',
+                mimeType: 'text/plain',
+                size: 5,
+                partId: '1',
+                attachmentId: 'attachone'
+              }
+            ]
+          }
+        ]
+      }),
+      openLink: async () => ({ opened: true }),
+      openDraft: async () => ({
+        locked: true,
+        draftId: 'draftone',
+        messageId: 'messageone',
+        threadId: null,
+        kind: 'new' as const,
+        to: ['bob@example.com'],
+        cc: [],
+        bcc: [],
+        subject: 'Rich',
+        body: 'Hi',
+        subjectLocked: false,
+        attachments: []
+      }),
+      saveDraft: async () => {
+        saves += 1;
+        return { draftId: 'draftone', messageId: 'messageone', threadId: null };
+      },
+      deleteDraft: async () => {
+        deletes += 1;
+        return { deleted: true };
+      },
+      downloadAttachment: async () => ({ saved: true })
+    };
+    const wrapper = mountMail({ props: { googleApi: accountsApi([ada]), gmailApi } });
+    await flushPromises();
+    await wrapper.get('.mail-row').trigger('click');
+    await flushPromises();
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'Download')
+      ?.trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('Saved.');
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('Edit draft'))
+      ?.trigger('click');
+    await flushPromises();
+    const locked = wrapper.get('[aria-labelledby="compose-title"]');
+    expect(locked.text()).toContain('cannot edit this draft');
+    expect(locked.find('textarea').exists()).toBe(false);
+    expect(locked.findAll('button').some((button) => button.text().includes('Send'))).toBe(false);
+    expect(locked.findAll('button').some((button) => button.text() === 'Delete draft')).toBe(false);
+    expect(saves).toBe(0);
+    wrapper.unmount();
+
+    const editable: GmailApi = {
+      ...gmailApi,
+      openDraft: async () => ({
+        locked: false,
+        draftId: 'draftone',
+        messageId: 'messageone',
+        threadId: 'threaddraft',
+        kind: 'new' as const,
+        to: ['bob@example.com'],
+        cc: [],
+        bcc: [],
+        subject: 'Plain',
+        body: 'Hello',
+        subjectLocked: false,
+        attachments: []
+      })
+    };
+    const again = mountMail({ props: { googleApi: accountsApi([ada]), gmailApi: editable } });
+    await flushPromises();
+    await again.get('.mail-row').trigger('click');
+    await flushPromises();
+    await again
+      .findAll('button')
+      .find((button) => button.text().includes('Edit draft'))
+      ?.trigger('click');
+    await flushPromises();
+    const composer = again.get('[aria-labelledby="compose-title"]');
+    await composer
+      .findAll('button')
+      .find((button) => button.text() === 'Delete draft')
+      ?.trigger('click');
+    expect(again.text()).toContain('Gmail will permanently delete this draft. This is not Trash.');
+    await again
+      .findAll('button')
+      .find((button) => button.text() === 'Keep')
+      ?.trigger('click');
+    expect(deletes).toBe(0);
+    expect(again.find('[aria-labelledby="compose-title"]').exists()).toBe(true);
+    await composer
+      .findAll('button')
+      .find((button) => button.text() === 'Delete draft')
+      ?.trigger('click');
+    await again
+      .findAll('button')
+      .find((button) => button.text() === 'Delete')
+      ?.trigger('click');
+    await flushPromises();
+    expect(deletes).toBe(1);
+    expect(again.find('[aria-labelledby="compose-title"]').exists()).toBe(false);
   });
 });

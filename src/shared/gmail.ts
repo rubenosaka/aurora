@@ -5,6 +5,20 @@ import {
   type ComposeSeedQuery,
   type ComposeSent
 } from './mail-compose.ts';
+import {
+  type AttachmentDownloadRequest,
+  type AttachmentDropRequest,
+  type AttachmentPickRequest,
+  type AttachmentDropped,
+  type AttachmentSaved,
+  type DraftDeleteRequest,
+  type DraftDeleted,
+  type DraftOpenRequest,
+  type DraftOpened,
+  type DraftSaveRequest,
+  type DraftSaved,
+  type PickedAttachments
+} from './mail-draft.ts';
 
 export const gmailLabelsChannel = 'gmail:labels';
 export const gmailThreadsChannel = 'gmail:threads';
@@ -21,6 +35,13 @@ export const gmailStarMessageChannel = 'gmail:star-message';
 export const gmailUnstarMessageChannel = 'gmail:unstar-message';
 export const gmailComposeSeedChannel = 'gmail:compose-seed';
 export const gmailSendMessageChannel = 'gmail:send-message';
+export const gmailDraftSaveChannel = 'gmail:draft-save';
+export const gmailDraftOpenChannel = 'gmail:draft-open';
+export const gmailDraftDeleteChannel = 'gmail:draft-delete';
+export const gmailDraftSendChannel = 'gmail:draft-send';
+export const gmailAttachmentPickChannel = 'gmail:attachment-pick';
+export const gmailAttachmentDropChannel = 'gmail:attachment-drop';
+export const gmailAttachmentDownloadChannel = 'gmail:attachment-download';
 
 export const gmailChannels = [
   gmailLabelsChannel,
@@ -37,7 +58,14 @@ export const gmailChannels = [
   gmailStarMessageChannel,
   gmailUnstarMessageChannel,
   gmailComposeSeedChannel,
-  gmailSendMessageChannel
+  gmailSendMessageChannel,
+  gmailDraftSaveChannel,
+  gmailDraftOpenChannel,
+  gmailDraftDeleteChannel,
+  gmailDraftSendChannel,
+  gmailAttachmentPickChannel,
+  gmailAttachmentDropChannel,
+  gmailAttachmentDownloadChannel
 ] as const;
 
 export type GmailChannel = (typeof gmailChannels)[number];
@@ -58,6 +86,8 @@ export const gmailErrorCodes = [
   'insufficient-scope',
   'gmail-rejected',
   'send-unconfirmed',
+  'save-unconfirmed',
+  'draft-conflict',
   'internal'
 ] as const;
 
@@ -83,6 +113,9 @@ const messages: Record<GmailErrorCode, string> = {
   'gmail-rejected': 'Gmail refused this request.',
   'send-unconfirmed':
     'Aurora could not confirm whether Gmail sent this message. Check Sent before sending it again.',
+  'save-unconfirmed':
+    'Aurora could not confirm whether Gmail saved this draft. Check Drafts before saving it again.',
+  'draft-conflict': 'This draft changed in Gmail. Aurora did not overwrite it.',
   internal: 'Request failed.'
 };
 
@@ -132,6 +165,8 @@ export interface GmailAttachment {
   fileName: string;
   mimeType: string;
   size: number;
+  partId: string | null;
+  attachmentId: string | null;
 }
 
 export interface GmailMessage {
@@ -291,11 +326,28 @@ function isSummary(value: unknown): value is GmailThreadSummary {
 }
 
 function isAttachment(value: unknown): value is GmailAttachment {
-  if (!isRecord(value) || !hasExactKeys(value, ['fileName', 'mimeType', 'size'])) return false;
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['fileName', 'mimeType', 'size', 'partId', 'attachmentId'])
+  ) {
+    return false;
+  }
   const fileName = boundedText(value.fileName, 256);
   const mimeType = boundedText(value.mimeType, 256);
   if (fileName === undefined || fileName === null) return false;
   if (mimeType === undefined || mimeType === null) return false;
+  if (
+    value.partId !== null &&
+    (typeof value.partId !== 'string' || !/^[0-9.]{1,32}$/.test(value.partId))
+  ) {
+    return false;
+  }
+  if (
+    value.attachmentId !== null &&
+    (typeof value.attachmentId !== 'string' || !/^[A-Za-z0-9_-]{1,2000}$/.test(value.attachmentId))
+  ) {
+    return false;
+  }
   return (
     typeof value.size === 'number' &&
     Number.isInteger(value.size) &&
@@ -522,6 +574,13 @@ export interface GmailBridge {
   ): Promise<GmailResult<GmailStarChanged>>;
   composeSeed(query: ComposeSeedQuery): Promise<GmailResult<ComposeSeed>>;
   sendMessage(message: ComposeMessage): Promise<GmailResult<ComposeSent>>;
+  saveDraft(request: DraftSaveRequest): Promise<GmailResult<DraftSaved>>;
+  openDraft(request: DraftOpenRequest): Promise<GmailResult<DraftOpened>>;
+  deleteDraft(request: DraftDeleteRequest): Promise<GmailResult<DraftDeleted>>;
+  sendDraft(request: DraftSaveRequest): Promise<GmailResult<ComposeSent>>;
+  pickAttachments(request: AttachmentPickRequest): Promise<GmailResult<PickedAttachments>>;
+  dropAttachment(request: AttachmentDropRequest): Promise<GmailResult<AttachmentDropped>>;
+  downloadAttachment(request: AttachmentDownloadRequest): Promise<GmailResult<AttachmentSaved>>;
 }
 
 export interface GmailApi {
@@ -540,4 +599,11 @@ export interface GmailApi {
   unstarMessage(accountId: string, threadId: string, messageId: string): Promise<GmailStarChanged>;
   composeSeed(query: ComposeSeedQuery): Promise<ComposeSeed>;
   sendMessage(message: ComposeMessage): Promise<ComposeSent>;
+  saveDraft(request: DraftSaveRequest): Promise<DraftSaved>;
+  openDraft(request: DraftOpenRequest): Promise<DraftOpened>;
+  deleteDraft(request: DraftDeleteRequest): Promise<DraftDeleted>;
+  sendDraft(request: DraftSaveRequest): Promise<ComposeSent>;
+  pickAttachments(request: AttachmentPickRequest): Promise<PickedAttachments>;
+  dropAttachment(request: AttachmentDropRequest): Promise<AttachmentDropped>;
+  downloadAttachment(request: AttachmentDownloadRequest): Promise<AttachmentSaved>;
 }
