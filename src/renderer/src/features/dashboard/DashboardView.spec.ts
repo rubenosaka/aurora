@@ -24,7 +24,16 @@ function gmail(): GmailBridge {
     listLabels: async () => ({ ok: false, error: { code: 'internal' } }),
     listThreads: async () => ({ ok: false, error: { code: 'internal' } }),
     readThread: async () => ({ ok: false, error: { code: 'internal' } }),
-    openLink: async () => ({ ok: false, error: { code: 'internal' } })
+    openLink: async () => ({ ok: false, error: { code: 'internal' } }),
+    markRead: async () => ({ ok: false, error: { code: 'internal' } }),
+    markUnread: async () => ({ ok: false, error: { code: 'internal' } }),
+    archiveThread: async () => ({ ok: false, error: { code: 'internal' } }),
+    trashThread: async () => ({ ok: false, error: { code: 'internal' } }),
+    untrashThread: async () => ({ ok: false, error: { code: 'internal' } }),
+    addLabel: async () => ({ ok: false, error: { code: 'internal' } }),
+    removeLabel: async () => ({ ok: false, error: { code: 'internal' } }),
+    starMessage: async () => ({ ok: false, error: { code: 'internal' } }),
+    unstarMessage: async () => ({ ok: false, error: { code: 'internal' } })
   };
 }
 

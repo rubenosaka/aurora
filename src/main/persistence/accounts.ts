@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { type DatabaseSync } from 'node:sqlite';
+import { historicalReadonlyGrant, parseGrantedScopes } from '../../shared/google-accounts.ts';
 import { PersistenceError, rethrowPersistence } from './errors.ts';
 
 export const accountStatuses = ['pending', 'connected', 'needs_reauth', 'disconnected'] as const;
@@ -22,6 +23,7 @@ export interface ConnectedAccountRecord {
   email: string | null;
   status: AccountStatus;
   oauthClientId: string;
+  grantedScopes: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -38,6 +40,7 @@ export interface NewConnectedAccount {
   email: string | null;
   status: AccountStatus;
   oauthClientId: string;
+  grantedScopes?: string;
 }
 
 const providerPattern = /^[a-z0-9](?:[a-z0-9_-]{0,31})$/;
@@ -101,6 +104,12 @@ function readNullableText(value: unknown): string | null {
   return readText(value);
 }
 
+function readGrant(value: unknown): string {
+  const scopes = parseGrantedScopes(value);
+  if (scopes === null) throw new PersistenceError('corrupt');
+  return scopes.join(' ');
+}
+
 function readClient(row: Record<string, unknown>): OAuthClientRecord {
   return {
     id: requireUuid(readText(row.id)),
@@ -120,6 +129,7 @@ function readAccount(row: Record<string, unknown>): ConnectedAccountRecord {
     email: readNullableText(row.email),
     status: requireStatus(readText(row.status)),
     oauthClientId: requireUuid(readText(row.oauth_client_id)),
+    grantedScopes: readGrant(row.granted_scopes),
     createdAt: readText(row.created_at),
     updatedAt: readText(row.updated_at)
   };
@@ -175,6 +185,7 @@ export function createConnectedAccount(
   const email = optionalText(input.email, 320);
   const status = requireStatus(input.status);
   const oauthClientId = requireUuid(input.oauthClientId);
+  const grantedScopes = readGrant(input.grantedScopes ?? historicalReadonlyGrant);
   const timestamp = now().toISOString();
   const id = randomUUID();
   try {
@@ -182,8 +193,8 @@ export function createConnectedAccount(
       .prepare(
         `INSERT INTO connected_accounts (
            id, provider, provider_account_id, display_name, email, status, oauth_client_id,
-           created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           granted_scopes, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -193,6 +204,7 @@ export function createConnectedAccount(
         email,
         status,
         oauthClientId,
+        grantedScopes,
         timestamp,
         timestamp
       );
@@ -207,6 +219,7 @@ export function createConnectedAccount(
     email,
     status,
     oauthClientId,
+    grantedScopes,
     createdAt: timestamp,
     updatedAt: timestamp
   };

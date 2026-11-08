@@ -37,6 +37,23 @@ function reader(overrides: Partial<GmailReader> = {}): GmailReader {
     listThreads: async () => ({ threads: [], nextPageToken: null }),
     readThread: async () => leakedThread,
     openLink: async () => ({ opened: true }),
+    markRead: async () => ({ threadId: 'threadsame', unread: false }),
+    markUnread: async () => ({ threadId: 'threadsame', unread: true }),
+    archiveThread: async () => ({ threadId: 'threadsame' }),
+    trashThread: async () => ({ threadId: 'threadsame' }),
+    untrashThread: async () => ({ threadId: 'threadsame' }),
+    addLabel: async () => ({ threadId: 'threadsame', labelId: 'Label_1' }),
+    removeLabel: async () => ({ threadId: 'threadsame', labelId: 'Label_1' }),
+    starMessage: async () => ({
+      threadId: 'threadsame',
+      messageId: 'messageone',
+      starred: true
+    }),
+    unstarMessage: async () => ({
+      threadId: 'threadsame',
+      messageId: 'messageone',
+      starred: false
+    }),
     ...overrides
   };
 }

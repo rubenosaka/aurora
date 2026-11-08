@@ -38,7 +38,8 @@ describe('Google OAuth requests', () => {
     assert.equal(url.searchParams.get('prompt'), 'consent select_account');
     assert.deepEqual(url.searchParams.get('scope')?.split(' '), [...googleScopes]);
     assert.equal(url.searchParams.get('include_granted_scopes'), null);
-    assert.equal(url.href.includes('gmail.modify'), false);
+    assert.equal(url.href.includes('gmail.modify'), true);
+    assert.equal(url.href.includes('gmail.readonly'), false);
     assert.equal(url.href.includes('mail.google.com'), false);
   });
 
@@ -51,7 +52,8 @@ describe('Google OAuth requests', () => {
         return json({
           id_token: 'header.payload.signature',
           refresh_token: 'refresh-token-one',
-          access_token: 'access-token-value'
+          access_token: 'access-token-value',
+          scope: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
         });
       },
       clientId,
@@ -61,13 +63,18 @@ describe('Google OAuth requests', () => {
     });
     assert.deepEqual(present, {
       idToken: 'header.payload.signature',
-      refreshToken: 'refresh-token-one'
+      refreshToken: 'refresh-token-one',
+      grantedScopes: 'email https://www.googleapis.com/auth/gmail.modify openid profile'
     });
     assert.equal(bodies[0]?.includes('code_verifier=verifier-value'), true);
     assert.equal(bodies[0]?.includes('client_secret='), false);
     const absent = await exchangeAuthorizationCode({
       fetchImpl: async () =>
-        json({ id_token: 'header.payload.signature', access_token: 'access-token-value' }),
+        json({
+          id_token: 'header.payload.signature',
+          access_token: 'access-token-value',
+          scope: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
+        }),
       clientId,
       code: 'auth-code',
       verifier: 'verifier-value',
@@ -100,7 +107,8 @@ describe('Google OAuth requests', () => {
     assert.deepEqual(rotated, {
       accessToken: 'access-token-value',
       expiresIn: null,
-      refreshToken: 'refresh-token-two'
+      refreshToken: 'refresh-token-two',
+      grantedScopes: null
     });
     const kept = await refreshAccessToken({
       fetchImpl: async () => json({ access_token: 'access-token-value', expires_in: 3600 }),
@@ -281,7 +289,8 @@ describe('Google OAuth requests', () => {
           return json({
             id_token: 'header.payload.signature',
             refresh_token: 'refresh-token-one',
-            access_token: 'access-token-value'
+            access_token: 'access-token-value',
+            scope: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
           });
         },
         clientId,
@@ -291,7 +300,8 @@ describe('Google OAuth requests', () => {
       });
       assert.deepEqual(exchanged, {
         idToken: 'header.payload.signature',
-        refreshToken: 'refresh-token-one'
+        refreshToken: 'refresh-token-one',
+        grantedScopes: 'email https://www.googleapis.com/auth/gmail.modify openid profile'
       });
       assert.deepEqual(logs, [
         'aurora oauth stage=token-exchange status=400 error=invalid_request',
@@ -322,7 +332,8 @@ describe('Google OAuth requests', () => {
       return json({
         id_token: 'header.payload.signature',
         refresh_token: 'refresh-token-two',
-        access_token: 'access-token-value'
+        access_token: 'access-token-value',
+        scope: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
       });
     };
     const exchanged = await exchangeAuthorizationCode({

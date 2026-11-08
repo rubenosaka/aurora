@@ -7,9 +7,13 @@ import {
 import {
   GmailIpcError,
   unwrapGmailResult,
+  parseGmailLabelChanged,
   parseGmailLabelList,
   parseGmailOpenedLink,
+  parseGmailReadState,
+  parseGmailStarChanged,
   parseGmailThread,
+  parseGmailThreadChanged,
   parseGmailThreadList,
   type GmailThreadQuery
 } from '../../shared/gmail.ts';
@@ -24,6 +28,18 @@ import {
   parseGoogleDisconnectResult,
   type GoogleAccountSummary
 } from '../../shared/google-accounts.ts';
+
+async function readGmail<T>(
+  pending: Promise<unknown>,
+  parse: (value: unknown) => T | null
+): Promise<T> {
+  try {
+    return unwrapGmailResult(await pending, parse);
+  } catch (error) {
+    if (error instanceof GmailIpcError) throw error;
+    throw new GmailIpcError('internal');
+  }
+}
 
 export function createRendererAppApi(bridge: AuroraBridge): AuroraApi {
   return Object.freeze({
@@ -137,12 +153,46 @@ export function createRendererAppApi(bridge: AuroraBridge): AuroraApi {
         }
       },
       async openLink(url: string) {
-        try {
-          return unwrapGmailResult(await bridge.gmail.openLink(url), parseGmailOpenedLink);
-        } catch (error) {
-          if (error instanceof GmailIpcError) throw error;
-          throw new GmailIpcError('internal');
-        }
+        return readGmail(bridge.gmail.openLink(url), parseGmailOpenedLink);
+      },
+      markRead(accountId: string, threadId: string) {
+        return readGmail(bridge.gmail.markRead(accountId, threadId), parseGmailReadState);
+      },
+      markUnread(accountId: string, threadId: string) {
+        return readGmail(bridge.gmail.markUnread(accountId, threadId), parseGmailReadState);
+      },
+      archiveThread(accountId: string, threadId: string) {
+        return readGmail(bridge.gmail.archiveThread(accountId, threadId), parseGmailThreadChanged);
+      },
+      trashThread(accountId: string, threadId: string) {
+        return readGmail(bridge.gmail.trashThread(accountId, threadId), parseGmailThreadChanged);
+      },
+      untrashThread(accountId: string, threadId: string) {
+        return readGmail(bridge.gmail.untrashThread(accountId, threadId), parseGmailThreadChanged);
+      },
+      addLabel(accountId: string, threadId: string, labelId: string) {
+        return readGmail(
+          bridge.gmail.addLabel(accountId, threadId, labelId),
+          parseGmailLabelChanged
+        );
+      },
+      removeLabel(accountId: string, threadId: string, labelId: string) {
+        return readGmail(
+          bridge.gmail.removeLabel(accountId, threadId, labelId),
+          parseGmailLabelChanged
+        );
+      },
+      starMessage(accountId: string, threadId: string, messageId: string) {
+        return readGmail(
+          bridge.gmail.starMessage(accountId, threadId, messageId),
+          parseGmailStarChanged
+        );
+      },
+      unstarMessage(accountId: string, threadId: string, messageId: string) {
+        return readGmail(
+          bridge.gmail.unstarMessage(accountId, threadId, messageId),
+          parseGmailStarChanged
+        );
       }
     })
   });

@@ -12,6 +12,7 @@ export type OAuthFlowCode =
   | 'encryption-unavailable'
   | 'needs-reauth'
   | 'operation-in-progress'
+  | 'scope-denied'
   | 'internal';
 
 const messages: Record<OAuthFlowCode, string> = {
@@ -28,6 +29,7 @@ const messages: Record<OAuthFlowCode, string> = {
   'encryption-unavailable': 'Credential protection is unavailable.',
   'needs-reauth': 'The saved Google credential can no longer be used.',
   'operation-in-progress': 'Another Google account change is already in progress.',
+  'scope-denied': 'Google did not grant permission to change mail. The saved account was kept.',
   internal: 'Request failed.'
 };
 

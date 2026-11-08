@@ -19,8 +19,38 @@ function google(): GoogleBridge {
   };
 }
 
+function pendingMail(): Pick<
+  GmailBridge,
+  | 'markRead'
+  | 'markUnread'
+  | 'archiveThread'
+  | 'trashThread'
+  | 'untrashThread'
+  | 'addLabel'
+  | 'removeLabel'
+  | 'starMessage'
+  | 'unstarMessage'
+> {
+  const denied = async (): Promise<{ ok: false; error: { code: 'internal' } }> => ({
+    ok: false,
+    error: { code: 'internal' }
+  });
+  return {
+    markRead: denied,
+    markUnread: denied,
+    archiveThread: denied,
+    trashThread: denied,
+    untrashThread: denied,
+    addLabel: denied,
+    removeLabel: denied,
+    starMessage: denied,
+    unstarMessage: denied
+  };
+}
+
 function gmail(): GmailBridge {
   return {
+    ...pendingMail(),
     listLabels: async () => ({ ok: false, error: { code: 'internal' } }),
     listThreads: async () => ({ ok: false, error: { code: 'internal' } }),
     readThread: async () => ({ ok: false, error: { code: 'internal' } }),
@@ -84,7 +114,8 @@ describe('createRendererAppApi', () => {
       id: '00000000-0000-4000-8000-000000000001',
       email: 'ada@example.com',
       displayName: 'Ada',
-      status: 'connected' as const
+      status: 'connected' as const,
+      canModifyMail: true
     };
     const api = createRendererAppApi({
       ...bridge(async () => ({ ok: true, value: info })),
@@ -139,6 +170,7 @@ describe('createRendererAppApi', () => {
     const api = createRendererAppApi({
       ...bridge(async () => ({ ok: true, value: info })),
       gmail: {
+        ...pendingMail(),
         listLabels: async () => ({ ok: true, value: { labels: [] } }),
         listThreads: async () => ({ ok: true, value: { threads: [], nextPageToken: null } }),
         readThread: async () => ({ ok: true, value: { id: 'threadsame', messages: [] } }),
@@ -186,6 +218,7 @@ describe('createRendererAppApi', () => {
         }
       },
       gmail: {
+        ...pendingMail(),
         listLabels: async () => denied,
         listThreads: async () => denied,
         readThread: async () => denied,
@@ -237,6 +270,7 @@ describe('createRendererAppApi', () => {
     const api = createRendererAppApi({
       ...bridge(async () => ({ ok: true, value: info })),
       gmail: {
+        ...pendingMail(),
         ...bridge(async () => ({ ok: true, value: info })).gmail,
         listLabels: async () =>
           ({

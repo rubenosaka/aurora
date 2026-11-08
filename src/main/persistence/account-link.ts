@@ -1,6 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { type DatabaseSync } from 'node:sqlite';
-import { isGoogleClientId, isGoogleClientSecret } from '../../shared/google-accounts.ts';
+import {
+  formatGrantedScopes,
+  isGoogleClientId,
+  isGoogleClientSecret,
+  parseGrantedScopes
+} from '../../shared/google-accounts.ts';
 import {
   createOAuthClient,
   getConnectedAccount,
@@ -34,6 +39,7 @@ export interface AccountConnectionInput {
   email: string | null;
   refreshToken: string | null;
   expectedAccountId: string | null;
+  grantedScopes: string;
 }
 
 function hasControlCharacter(value: string): boolean {
@@ -54,6 +60,12 @@ function requireText(value: string, maxLength: number): string {
 function optionalText(value: string | null, maxLength: number): string | null {
   if (value === null) return null;
   return requireText(value, maxLength);
+}
+
+function requireGrant(value: string): string {
+  const parsed = parseGrantedScopes(value);
+  if (parsed === null) throw new PersistenceError('invalid');
+  return formatGrantedScopes(parsed);
 }
 
 function requireUuid(value: string): string {
@@ -230,6 +242,7 @@ export function commitAccountConnection(
   const providerAccountId = requireText(input.providerAccountId, 256);
   const displayName = optionalText(input.displayName, 256);
   const email = optionalText(input.email, 320);
+  const grantedScopes = requireGrant(input.grantedScopes);
   const bySubject = findGoogleAccount(database, providerAccountId);
   let target: ConnectedAccountRecord | null = bySubject;
   if (input.expectedAccountId !== null) {
@@ -276,10 +289,19 @@ export function commitAccountConnection(
         .prepare(
           `INSERT INTO connected_accounts (
              id, provider, provider_account_id, display_name, email, status, oauth_client_id,
-             created_at, updated_at
-           ) VALUES (?, 'google', ?, ?, ?, 'connected', ?, ?, ?)`
+             granted_scopes, created_at, updated_at
+           ) VALUES (?, 'google', ?, ?, ?, 'connected', ?, ?, ?, ?)`
         )
-        .run(id, providerAccountId, displayName, email, oauthClientId, timestamp, timestamp);
+        .run(
+          id,
+          providerAccountId,
+          displayName,
+          email,
+          oauthClientId,
+          grantedScopes,
+          timestamp,
+          timestamp
+        );
       if (ciphertext === null) throw new PersistenceError('invalid');
       insertRefreshToken(database, id, ciphertext, timestamp);
     });
@@ -291,10 +313,10 @@ export function commitAccountConnection(
       database
         .prepare(
           `UPDATE connected_accounts
-           SET display_name = ?, email = ?, status = 'connected', updated_at = ?
+           SET display_name = ?, email = ?, status = 'connected', granted_scopes = ?, updated_at = ?
            WHERE id = ? AND provider = 'google' AND provider_account_id = ?`
         )
-        .run(displayName, email, timestamp, accountId, providerAccountId).changes
+        .run(displayName, email, grantedScopes, timestamp, accountId, providerAccountId).changes
     );
     if (updated !== 1) throw new PersistenceError('not-found');
     if (ciphertext === null) {
@@ -304,6 +326,27 @@ export function commitAccountConnection(
     writeRefreshToken(database, accountId, ciphertext, timestamp);
   });
   return getConnectedAccount(database, accountId);
+}
+
+export function saveGrantedScopes(
+  database: DatabaseSync,
+  accountId: string,
+  grantedScopes: string,
+  now: () => Date = () => new Date()
+): void {
+  const id = requireUuid(accountId);
+  const scopes = requireGrant(grantedScopes);
+  const timestamp = now().toISOString();
+  const updated = changesOf(
+    database
+      .prepare(
+        `UPDATE connected_accounts
+         SET granted_scopes = ?, updated_at = ?
+         WHERE id = ? AND provider = 'google'`
+      )
+      .run(scopes, timestamp, id).changes
+  );
+  if (updated !== 1) throw new PersistenceError('not-found');
 }
 
 export function replaceAccountRefreshToken(

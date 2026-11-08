@@ -1,19 +1,24 @@
 <script setup lang="ts">
 import {
   AlertOctagon,
+  Archive,
   ChevronLeft,
   ChevronsUpDown,
   File,
   Flag,
   Inbox,
+  Mail,
+  MailOpen,
+  PanelLeft,
   Paperclip,
+  RotateCcw,
   Search,
   Send,
   Star,
   Tag,
   Trash2
 } from '@lucide/vue';
-import { computed, onMounted, ref, type Component } from 'vue';
+import { computed, nextTick, onMounted, ref, watch, type Component } from 'vue';
 import { RouterLink } from 'vue-router';
 import {
   GmailIpcError,
@@ -60,7 +65,16 @@ const status = ref<'loading' | 'ready' | 'error'>('loading');
 const detail = ref('');
 const errorCode = ref<GmailErrorCode | null>(null);
 const expandedMeta = ref<Record<string, boolean>>({});
+const actionNotice = ref('');
+const actionBusy = ref<string | null>(null);
+const actionEpoch = ref(0);
+const searchStale = ref(false);
+const labelsOpen = ref(false);
+const foldersExpanded = ref(false);
+const trashTarget = ref<string | null>(null);
+const cancelTrashButton = ref<HTMLButtonElement | null>(null);
 let generation = 0;
+let trashOpener: HTMLElement | null = null;
 
 function google(): GoogleApi {
   return props.googleApi ?? createRendererAppApi(window.aurora).google;
@@ -77,7 +91,19 @@ const showRecovery = computed(
   () =>
     errorCode.value === 'needs-reauth' ||
     errorCode.value === 'permission-denied' ||
-    errorCode.value === 'gmail-rejected'
+    errorCode.value === 'gmail-rejected' ||
+    errorCode.value === 'insufficient-scope'
+);
+const selectedAccount = computed(() =>
+  accounts.value.find((account) => account.id === accountId.value)
+);
+const userLabels = computed(() => labels.value.filter((label) => label.type === 'user'));
+const conversationUnread = computed(() => messages.value.some((item) => item.unread));
+const conversationInInbox = computed(() =>
+  messages.value.some((item) => item.labelIds.includes('INBOX'))
+);
+const conversationInTrash = computed(
+  () => labelId.value === 'TRASH' || messages.value.some((item) => item.labelIds.includes('TRASH'))
 );
 
 function accountLabel(account: GoogleAccountSummary): string {
@@ -132,6 +158,8 @@ function resetPages(): void {
 async function loadList(gen: number): Promise<void> {
   status.value = 'loading';
   errorCode.value = null;
+  searchStale.value = false;
+  actionNotice.value = '';
   const listed = await gmail().listLabels(accountId.value);
   if (gen !== generation) return;
   labels.value = listed.labels;
@@ -172,6 +200,8 @@ async function reloadPage(): Promise<void> {
   const gen = bump();
   status.value = 'loading';
   errorCode.value = null;
+  searchStale.value = false;
+  actionNotice.value = '';
   try {
     const page = await gmail().listThreads({
       accountId: accountId.value,
@@ -202,6 +232,7 @@ function chooseAccount(event: Event): void {
 }
 
 function chooseLabel(id: string): void {
+  foldersExpanded.value = false;
   if (id === labelId.value && activeQuery.value === null && openId.value === null) return;
   labelId.value = id;
   searchText.value = '';
@@ -265,6 +296,276 @@ function toggleMeta(id: string): void {
 function hasRecipients(item: GmailMessage): boolean {
   return item.to !== null || item.cc !== null || item.bcc !== null;
 }
+
+function canChangeMail(): boolean {
+  return selectedAccount.value?.canModifyMail === true;
+}
+
+function threadBusy(threadId: string): boolean {
+  return actionBusy.value === threadId;
+}
+
+function refreshSearch(): void {
+  resetPages();
+  void startList();
+}
+
+function askTrash(threadId: string, event: Event): void {
+  trashOpener = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  trashTarget.value = threadId;
+}
+
+function closeTrash(): void {
+  trashTarget.value = null;
+  trashOpener?.focus();
+  trashOpener = null;
+}
+
+function labelApplied(labelIdValue: string): boolean {
+  return messages.value.some((item) => item.labelIds.includes(labelIdValue));
+}
+
+async function runAction(
+  threadId: string,
+  sentence: string,
+  apply: () => void,
+  undo: () => void,
+  call: () => Promise<unknown>,
+  finish: () => void
+): Promise<void> {
+  if (!canChangeMail()) {
+    actionNotice.value = gmailErrorMessage('insufficient-scope');
+    return;
+  }
+  const capturedAccount = accountId.value;
+  const gen = generation;
+  const epoch = actionEpoch.value + 1;
+  actionEpoch.value = epoch;
+  actionBusy.value = threadId;
+  actionNotice.value = '';
+  apply();
+  try {
+    await call();
+    if (gen !== generation || capturedAccount !== accountId.value) return;
+    if (activeQuery.value !== null) searchStale.value = true;
+    finish();
+  } catch (error) {
+    if (gen !== generation || capturedAccount !== accountId.value) return;
+    if (error instanceof GmailIpcError && error.code === 'not-found') {
+      threads.value = threads.value.filter((item) => item.id !== threadId);
+      if (openId.value === threadId) back();
+      actionNotice.value = error.message;
+      return;
+    }
+    undo();
+    actionNotice.value =
+      error instanceof GmailIpcError &&
+      (error.code === 'insufficient-scope' || error.code === 'needs-reauth')
+        ? error.message
+        : sentence;
+  } finally {
+    if (actionEpoch.value === epoch) actionBusy.value = null;
+  }
+}
+
+function snapshotThreads(): GmailThreadSummary[] {
+  return threads.value.map((item) => ({ ...item }));
+}
+
+function snapshotMessages(): GmailMessage[] {
+  return messages.value.map((item) => ({ ...item, labelIds: [...item.labelIds] }));
+}
+
+function snapshotLabels(): GmailLabel[] {
+  return labels.value.map((item) => ({ ...item }));
+}
+
+function changeRead(threadId: string, unread: boolean): void {
+  const previousThreads = snapshotThreads();
+  const previousMessages = snapshotMessages();
+  const previousLabels = snapshotLabels();
+  const current = threads.value.find((item) => item.id === threadId);
+  void runAction(
+    threadId,
+    unread
+      ? 'Aurora could not mark this conversation unread.'
+      : 'Aurora could not mark this conversation read.',
+    () => {
+      threads.value = threads.value.map((item) =>
+        item.id === threadId ? { ...item, unread } : item
+      );
+      if (openId.value === threadId) {
+        messages.value = messages.value.map((item) => ({ ...item, unread }));
+      }
+      if (activeQuery.value === null && current !== undefined && current.unread !== unread) {
+        labels.value = labels.value.map((label) => {
+          if (label.id !== labelId.value || label.unreadCount === null) return label;
+          return { ...label, unreadCount: Math.max(0, label.unreadCount + (unread ? 1 : -1)) };
+        });
+      }
+    },
+    () => {
+      threads.value = previousThreads;
+      messages.value = previousMessages;
+      labels.value = previousLabels;
+    },
+    () =>
+      unread
+        ? gmail().markUnread(accountId.value, threadId)
+        : gmail().markRead(accountId.value, threadId),
+    () => undefined
+  );
+}
+
+function archiveConversation(threadId: string): void {
+  const previousThreads = snapshotThreads();
+  void runAction(
+    threadId,
+    'Aurora could not archive this conversation.',
+    () => undefined,
+    () => {
+      threads.value = previousThreads;
+    },
+    () => gmail().archiveThread(accountId.value, threadId),
+    () => {
+      if (activeQuery.value === null && labelId.value === 'INBOX') {
+        threads.value = threads.value.filter((item) => item.id !== threadId);
+        if (openId.value === threadId) back();
+      }
+    }
+  );
+}
+
+function moveToTrash(threadId: string): void {
+  const previousThreads = snapshotThreads();
+  void runAction(
+    threadId,
+    'Aurora could not move this conversation to Trash.',
+    () => undefined,
+    () => {
+      threads.value = previousThreads;
+    },
+    () => gmail().trashThread(accountId.value, threadId),
+    () => {
+      if (activeQuery.value === null && labelId.value !== 'TRASH') {
+        threads.value = threads.value.filter((item) => item.id !== threadId);
+        if (openId.value === threadId) back();
+      }
+    }
+  );
+}
+
+function restoreConversation(threadId: string): void {
+  const previousThreads = snapshotThreads();
+  void runAction(
+    threadId,
+    'Aurora could not restore this conversation.',
+    () => undefined,
+    () => {
+      threads.value = previousThreads;
+    },
+    () => gmail().untrashThread(accountId.value, threadId),
+    () => {
+      if (activeQuery.value === null && labelId.value === 'TRASH') {
+        threads.value = threads.value.filter((item) => item.id !== threadId);
+        if (openId.value === threadId) back();
+      }
+    }
+  );
+}
+
+function confirmTrash(): void {
+  const threadId = trashTarget.value;
+  trashTarget.value = null;
+  if (threadId !== null) moveToTrash(threadId);
+}
+
+function toggleUserLabel(label: GmailLabel): void {
+  const threadId = openId.value;
+  if (threadId === null) return;
+  const removing = labelApplied(label.id);
+  const previousMessages = snapshotMessages();
+  const previousThreads = snapshotThreads();
+  void runAction(
+    threadId,
+    removing ? 'Aurora could not remove this label.' : 'Aurora could not add this label.',
+    () => {
+      messages.value = messages.value.map((item) => ({
+        ...item,
+        labelIds: removing
+          ? item.labelIds.filter((id) => id !== label.id)
+          : [...item.labelIds, label.id]
+      }));
+    },
+    () => {
+      messages.value = previousMessages;
+      threads.value = previousThreads;
+    },
+    () =>
+      removing
+        ? gmail().removeLabel(accountId.value, threadId, label.id)
+        : gmail().addLabel(accountId.value, threadId, label.id),
+    () => {
+      if (activeQuery.value === null && removing && labelId.value === label.id) {
+        threads.value = threads.value.filter((item) => item.id !== threadId);
+        if (openId.value === threadId) back();
+      }
+    }
+  );
+}
+
+function changeStar(message: GmailMessage): void {
+  const threadId = openId.value;
+  if (threadId === null) return;
+  const starred = !message.starred;
+  const previousMessages = snapshotMessages();
+  const previousThreads = snapshotThreads();
+  void runAction(
+    threadId,
+    starred
+      ? 'Aurora could not star this message.'
+      : 'Aurora could not remove the star from this message.',
+    () => {
+      messages.value = messages.value.map((item) =>
+        item.id === message.id
+          ? {
+              ...item,
+              starred,
+              labelIds: starred
+                ? [...item.labelIds, 'STARRED']
+                : item.labelIds.filter((id) => id !== 'STARRED')
+            }
+          : item
+      );
+      const anyStar = messages.value.some((item) => item.starred);
+      threads.value = threads.value.map((item) =>
+        item.id === threadId ? { ...item, starred: anyStar } : item
+      );
+    },
+    () => {
+      messages.value = previousMessages;
+      threads.value = previousThreads;
+    },
+    () =>
+      starred
+        ? gmail().starMessage(accountId.value, threadId, message.id)
+        : gmail().unstarMessage(accountId.value, threadId, message.id),
+    () => {
+      const anyStar = messages.value.some((item) => item.starred);
+      if (activeQuery.value === null && labelId.value === 'STARRED' && !anyStar) {
+        threads.value = threads.value.filter((item) => item.id !== threadId);
+        if (openId.value === threadId) back();
+      }
+    }
+  );
+}
+
+watch(trashTarget, (value) => {
+  if (value === null) return;
+  void nextTick(() => {
+    cancelTrashButton.value?.focus();
+  });
+});
 
 function onHtmlClick(event: MouseEvent): void {
   if (!(event.target instanceof Element)) return;
@@ -350,24 +651,185 @@ onMounted(() => {
           </button>
         </form>
       </div>
-      <div v-if="openId === null" class="mail-folders" role="list" aria-label="Labels">
-        <button
-          v-for="label in labels"
-          :key="label.id"
-          class="folder-button"
-          type="button"
-          :aria-pressed="folderSelected(label.id)"
-          :disabled="status === 'loading'"
-          @click="chooseLabel(label.id)"
-        >
-          <component :is="folderIcon(label)" :size="16" :stroke-width="1.75" aria-hidden="true" />
-          <span class="folder-name">{{ label.name }}</span>
-          <span v-if="label.unreadCount !== null" class="folder-count">{{
-            label.unreadCount
-          }}</span>
-        </button>
+      <div
+        v-if="openId === null"
+        class="mail-workspace"
+        :class="{ 'is-folders-open': foldersExpanded }"
+      >
+        <div class="mail-folder-bar">
+          <button
+            class="control mail-folder-toggle"
+            type="button"
+            aria-label="Folders"
+            :aria-expanded="foldersExpanded"
+            @click="foldersExpanded = !foldersExpanded"
+          >
+            <PanelLeft :size="16" :stroke-width="1.75" aria-hidden="true" />
+          </button>
+          <nav class="mail-folders" aria-label="Labels">
+            <button
+              v-for="label in labels"
+              :key="label.id"
+              class="folder-button"
+              type="button"
+              :aria-pressed="folderSelected(label.id)"
+              :disabled="status === 'loading'"
+              @click="chooseLabel(label.id)"
+            >
+              <component
+                :is="folderIcon(label)"
+                :size="16"
+                :stroke-width="1.75"
+                aria-hidden="true"
+              />
+              <span class="folder-name">{{ label.name }}</span>
+              <span v-if="label.unreadCount !== null" class="folder-count">{{
+                label.unreadCount
+              }}</span>
+            </button>
+          </nav>
+        </div>
+        <div class="mail-stage">
+          <StatusPanel
+            v-if="status === 'loading'"
+            kind="loading"
+            title="Loading"
+            message="Loading conversations."
+          />
+          <template v-else-if="status === 'error'">
+            <StatusPanel kind="error" title="Mail is unavailable" :message="detail" />
+            <RouterLink v-if="showRecovery" class="text-link" to="/integrations">
+              Integrations
+            </RouterLink>
+          </template>
+          <template v-else>
+            <p v-if="selectedAccount && selectedAccount.canModifyMail !== true" role="status">
+              Reconnect this Google account before changing mail.
+              <RouterLink class="text-link" to="/integrations">Reconnect</RouterLink>
+            </p>
+            <p v-if="actionNotice" role="alert">{{ actionNotice }}</p>
+            <p v-if="searchStale" role="status">
+              These search results may no longer match Gmail.
+              <button class="control" type="button" @click="refreshSearch">Refresh</button>
+            </p>
+            <p v-if="activeQuery !== null" class="text-sm text-muted" role="status">
+              Search results
+            </p>
+            <StatusPanel
+              v-if="threads.length === 0"
+              kind="empty"
+              title="No conversations"
+              message="This mailbox has no conversations to show."
+            />
+            <div v-else class="mail-list">
+              <ul class="mail-rows">
+                <li v-for="thread in threads" :key="thread.id" class="mail-row-line">
+                  <button
+                    class="mail-row"
+                    :class="{ 'is-unread': thread.unread }"
+                    type="button"
+                    @click="openThread(thread.id)"
+                  >
+                    <span
+                      class="mail-unread"
+                      :class="{ 'is-on': thread.unread }"
+                      aria-hidden="true"
+                    ></span>
+                    <span class="mail-copy">
+                      <span class="mail-line-primary">
+                        <Star
+                          v-if="thread.starred"
+                          class="mail-star"
+                          :size="16"
+                          :stroke-width="1.75"
+                          aria-hidden="true"
+                        />
+                        <span class="mail-subject">{{ thread.subject ?? '(no subject)' }}</span>
+                        <span v-if="thread.snippet" class="mail-snippet">{{ thread.snippet }}</span>
+                      </span>
+                      <span class="mail-line-secondary">
+                        <span class="mail-sender">{{ thread.from }}</span>
+                        <span class="mail-date">{{ formatDate(thread.date) }}</span>
+                      </span>
+                    </span>
+                    <span v-if="thread.unread" class="sr-only">Unread</span>
+                    <span v-if="thread.starred" class="sr-only">Starred</span>
+                  </button>
+                  <div
+                    class="mail-row-actions"
+                    :aria-busy="threadBusy(thread.id) ? 'true' : undefined"
+                  >
+                    <button
+                      class="control"
+                      type="button"
+                      :aria-label="thread.unread ? 'Mark as read' : 'Mark as unread'"
+                      :disabled="threadBusy(thread.id)"
+                      @click="changeRead(thread.id, !thread.unread)"
+                    >
+                      <MailOpen
+                        v-if="thread.unread"
+                        :size="16"
+                        :stroke-width="1.75"
+                        aria-hidden="true"
+                      />
+                      <Mail v-else :size="16" :stroke-width="1.75" aria-hidden="true" />
+                    </button>
+                    <button
+                      v-if="labelId === 'TRASH'"
+                      class="control"
+                      type="button"
+                      aria-label="Restore"
+                      :disabled="threadBusy(thread.id)"
+                      @click="restoreConversation(thread.id)"
+                    >
+                      <RotateCcw :size="16" :stroke-width="1.75" aria-hidden="true" />
+                    </button>
+                    <button
+                      v-else-if="labelId === 'INBOX' || activeQuery !== null"
+                      class="control"
+                      type="button"
+                      aria-label="Archive"
+                      :disabled="threadBusy(thread.id)"
+                      @click="archiveConversation(thread.id)"
+                    >
+                      <Archive :size="16" :stroke-width="1.75" aria-hidden="true" />
+                    </button>
+                    <button
+                      v-if="labelId !== 'TRASH'"
+                      class="control control-danger"
+                      type="button"
+                      aria-label="Move to Trash"
+                      :disabled="threadBusy(thread.id)"
+                      @click="askTrash(thread.id, $event)"
+                    >
+                      <Trash2 :size="16" :stroke-width="1.75" aria-hidden="true" />
+                    </button>
+                  </div>
+                </li>
+              </ul>
+            </div>
+            <div class="mail-pager">
+              <button
+                class="control"
+                type="button"
+                :disabled="pageIndex === 0"
+                @click="showPrevious"
+              >
+                Previous
+              </button>
+              <button
+                class="control"
+                type="button"
+                :disabled="nextPageToken === null"
+                @click="showNext"
+              >
+                Next
+              </button>
+            </div>
+          </template>
+        </div>
       </div>
-      <div v-if="openId !== null" class="mail-stage">
+      <div v-else class="mail-stage">
         <div class="conversation-header">
           <button class="control" type="button" @click="back">
             <ChevronLeft :size="16" :stroke-width="1.75" aria-hidden="true" />
@@ -375,6 +837,84 @@ onMounted(() => {
           </button>
           <h2 class="conversation-subject">{{ conversationSubject }}</h2>
           <p class="conversation-date">{{ formatDate(conversationDate) }}</p>
+        </div>
+        <div class="conversation-actions">
+          <button
+            class="control"
+            type="button"
+            :disabled="openId !== null && threadBusy(openId)"
+            :aria-busy="openId !== null && threadBusy(openId) ? 'true' : undefined"
+            @click="changeRead(openId ?? '', !conversationUnread)"
+          >
+            <MailOpen
+              v-if="conversationUnread"
+              :size="16"
+              :stroke-width="1.75"
+              aria-hidden="true"
+            />
+            <Mail v-else :size="16" :stroke-width="1.75" aria-hidden="true" />
+            {{ conversationUnread ? 'Mark read' : 'Mark unread' }}
+          </button>
+          <button
+            v-if="conversationInTrash"
+            class="control"
+            type="button"
+            :disabled="openId !== null && threadBusy(openId)"
+            @click="restoreConversation(openId ?? '')"
+          >
+            <RotateCcw :size="16" :stroke-width="1.75" aria-hidden="true" />
+            Restore
+          </button>
+          <button
+            v-else-if="conversationInInbox"
+            class="control"
+            type="button"
+            :disabled="openId !== null && threadBusy(openId)"
+            @click="archiveConversation(openId ?? '')"
+          >
+            <Archive :size="16" :stroke-width="1.75" aria-hidden="true" />
+            Archive
+          </button>
+          <button
+            v-if="!conversationInTrash"
+            class="control control-danger"
+            type="button"
+            :disabled="openId !== null && threadBusy(openId)"
+            @click="askTrash(openId ?? '', $event)"
+          >
+            <Trash2 :size="16" :stroke-width="1.75" aria-hidden="true" />
+            Trash
+          </button>
+          <button
+            class="control"
+            type="button"
+            aria-haspopup="listbox"
+            :aria-expanded="labelsOpen"
+            @click="labelsOpen = !labelsOpen"
+          >
+            <Tag :size="16" :stroke-width="1.75" aria-hidden="true" />
+            Labels
+          </button>
+        </div>
+        <p v-if="selectedAccount && selectedAccount.canModifyMail !== true" role="status">
+          Reconnect this Google account before changing mail.
+          <RouterLink class="text-link" to="/integrations">Reconnect</RouterLink>
+        </p>
+        <p v-if="actionNotice && openId !== null" role="alert">{{ actionNotice }}</p>
+        <div v-if="labelsOpen" class="label-menu" role="listbox" aria-label="Labels">
+          <p v-if="userLabels.length === 0">No labels</p>
+          <button
+            v-for="label in userLabels"
+            :key="label.id"
+            class="control"
+            type="button"
+            role="option"
+            :aria-pressed="labelApplied(label.id)"
+            :disabled="openId !== null && threadBusy(openId)"
+            @click="toggleUserLabel(label)"
+          >
+            {{ label.name }}
+          </button>
         </div>
         <StatusPanel
           v-if="status === 'loading'"
@@ -397,6 +937,16 @@ onMounted(() => {
               <span v-if="item.cc"> Cc {{ item.cc }}</span>
               <span v-if="item.bcc"> Bcc {{ item.bcc }}</span>
             </p>
+            <button
+              class="control"
+              type="button"
+              :aria-pressed="item.starred"
+              :aria-label="item.starred ? 'Remove star' : 'Star'"
+              :disabled="openId !== null && threadBusy(openId)"
+              @click="changeStar(item)"
+            >
+              <Star :size="16" :stroke-width="1.75" aria-hidden="true" />
+            </button>
             <button
               v-if="hasRecipients(item)"
               class="control"
@@ -426,65 +976,22 @@ onMounted(() => {
           </ul>
         </article>
       </div>
-      <div v-else class="mail-stage">
-        <StatusPanel
-          v-if="status === 'loading'"
-          kind="loading"
-          title="Loading"
-          message="Loading conversations."
-        />
-        <template v-else-if="status === 'error'">
-          <StatusPanel kind="error" title="Mail is unavailable" :message="detail" />
-          <RouterLink v-if="showRecovery" class="text-link" to="/integrations">
-            Integrations
-          </RouterLink>
-        </template>
-        <template v-else>
-          <p v-if="activeQuery !== null" class="text-sm text-muted" role="status">Search results</p>
-          <StatusPanel
-            v-if="threads.length === 0"
-            kind="empty"
-            title="No conversations"
-            message="This mailbox has no conversations to show."
-          />
-          <ul v-else class="mail-rows">
-            <li v-for="thread in threads" :key="thread.id">
-              <button
-                class="mail-row"
-                :class="{ 'is-unread': thread.unread }"
-                type="button"
-                @click="openThread(thread.id)"
-              >
-                <span
-                  class="mail-unread"
-                  :class="{ 'is-on': thread.unread }"
-                  aria-hidden="true"
-                ></span>
-                <span class="mail-sender">{{ thread.from }}</span>
-                <span class="mail-subject-line">
-                  <span class="mail-subject">{{ thread.subject ?? '(no subject)' }}</span>
-                  <span v-if="thread.snippet" class="mail-snippet">{{ thread.snippet }}</span>
-                </span>
-                <span class="mail-date">{{ formatDate(thread.date) }}</span>
-                <span v-if="thread.unread" class="sr-only">Unread</span>
-              </button>
-            </li>
-          </ul>
-          <div class="mt-4 flex gap-2">
-            <button class="control" type="button" :disabled="pageIndex === 0" @click="showPrevious">
-              Previous
-            </button>
-            <button
-              class="control"
-              type="button"
-              :disabled="nextPageToken === null"
-              @click="showNext"
-            >
-              Next
-            </button>
-          </div>
-        </template>
-      </div>
     </template>
+    <div
+      v-if="trashTarget !== null"
+      class="mail-dialog"
+      role="dialog"
+      aria-labelledby="trash-title"
+      @keydown.esc="closeTrash"
+    >
+      <h2 id="trash-title">Move to Trash?</h2>
+      <p>You can restore this conversation from Trash.</p>
+      <button ref="cancelTrashButton" class="control" type="button" @click="closeTrash">
+        Cancel
+      </button>
+      <button class="control control-danger" type="button" @click="confirmTrash">
+        Move to Trash
+      </button>
+    </div>
   </div>
 </template>

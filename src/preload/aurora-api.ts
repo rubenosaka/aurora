@@ -6,19 +6,36 @@ import {
   type AppInfo
 } from '../shared/app-info.ts';
 import {
+  gmailAddLabelChannel,
+  gmailArchiveThreadChannel,
   gmailLabelsChannel,
+  gmailMarkReadChannel,
+  gmailMarkUnreadChannel,
   gmailOpenLinkChannel,
+  gmailRemoveLabelChannel,
+  gmailStarMessageChannel,
   gmailThreadChannel,
   gmailThreadsChannel,
+  gmailTrashThreadChannel,
+  gmailUnstarMessageChannel,
+  gmailUntrashThreadChannel,
+  parseGmailLabelChanged,
   parseGmailLabelList,
   parseGmailOpenedLink,
+  parseGmailReadState,
   parseGmailResult,
+  parseGmailStarChanged,
   parseGmailThread,
+  parseGmailThreadChanged,
   parseGmailThreadList,
+  type GmailLabelChanged,
   type GmailLabelList,
   type GmailOpenedLink,
+  type GmailReadState,
   type GmailResult,
+  type GmailStarChanged,
   type GmailThread,
+  type GmailThreadChanged,
   type GmailThreadList,
   type GmailThreadQuery
 } from '../shared/gmail.ts';
@@ -54,6 +71,18 @@ function internalGoogle<T>(): GoogleResult<T> {
 
 function internalGmail<T>(): GmailResult<T> {
   return { ok: false, error: { code: 'internal' } };
+}
+
+function gmailAction<T>(
+  invoke: AuroraInvoke,
+  channel: string,
+  payload: unknown,
+  parse: (value: unknown) => T | null
+): Promise<GmailResult<T>> {
+  return Promise.resolve()
+    .then(() => invoke(channel, payload))
+    .then((raw) => parseGmailResult(raw, parse))
+    .catch(() => internalGmail());
 }
 
 export function createAuroraApi(invoke: AuroraInvoke): AuroraBridge {
@@ -143,6 +172,94 @@ export function createAuroraApi(invoke: AuroraInvoke): AuroraBridge {
           .then(() => invoke(gmailOpenLinkChannel, { url }))
           .then((raw) => parseGmailResult(raw, parseGmailOpenedLink))
           .catch(() => internalGmail());
+      },
+      markRead(accountId: string, threadId: string): Promise<GmailResult<GmailReadState>> {
+        return gmailAction(
+          invoke,
+          gmailMarkReadChannel,
+          { accountId, threadId },
+          parseGmailReadState
+        );
+      },
+      markUnread(accountId: string, threadId: string): Promise<GmailResult<GmailReadState>> {
+        return gmailAction(
+          invoke,
+          gmailMarkUnreadChannel,
+          { accountId, threadId },
+          parseGmailReadState
+        );
+      },
+      archiveThread(accountId: string, threadId: string): Promise<GmailResult<GmailThreadChanged>> {
+        return gmailAction(
+          invoke,
+          gmailArchiveThreadChannel,
+          { accountId, threadId },
+          parseGmailThreadChanged
+        );
+      },
+      trashThread(accountId: string, threadId: string): Promise<GmailResult<GmailThreadChanged>> {
+        return gmailAction(
+          invoke,
+          gmailTrashThreadChannel,
+          { accountId, threadId },
+          parseGmailThreadChanged
+        );
+      },
+      untrashThread(accountId: string, threadId: string): Promise<GmailResult<GmailThreadChanged>> {
+        return gmailAction(
+          invoke,
+          gmailUntrashThreadChannel,
+          { accountId, threadId },
+          parseGmailThreadChanged
+        );
+      },
+      addLabel(
+        accountId: string,
+        threadId: string,
+        labelId: string
+      ): Promise<GmailResult<GmailLabelChanged>> {
+        return gmailAction(
+          invoke,
+          gmailAddLabelChannel,
+          { accountId, threadId, labelId },
+          parseGmailLabelChanged
+        );
+      },
+      removeLabel(
+        accountId: string,
+        threadId: string,
+        labelId: string
+      ): Promise<GmailResult<GmailLabelChanged>> {
+        return gmailAction(
+          invoke,
+          gmailRemoveLabelChannel,
+          { accountId, threadId, labelId },
+          parseGmailLabelChanged
+        );
+      },
+      starMessage(
+        accountId: string,
+        threadId: string,
+        messageId: string
+      ): Promise<GmailResult<GmailStarChanged>> {
+        return gmailAction(
+          invoke,
+          gmailStarMessageChannel,
+          { accountId, threadId, messageId },
+          parseGmailStarChanged
+        );
+      },
+      unstarMessage(
+        accountId: string,
+        threadId: string,
+        messageId: string
+      ): Promise<GmailResult<GmailStarChanged>> {
+        return gmailAction(
+          invoke,
+          gmailUnstarMessageChannel,
+          { accountId, threadId, messageId },
+          parseGmailStarChanged
+        );
       }
     })
   });

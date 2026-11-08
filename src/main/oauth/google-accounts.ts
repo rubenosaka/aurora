@@ -6,7 +6,8 @@ import {
   type GoogleCancelResult,
   type GoogleClientSaved,
   type GoogleClientState,
-  type GoogleDisconnectResult
+  type GoogleDisconnectResult,
+  grantAllowsMailChanges
 } from '../../shared/google-accounts.ts';
 import {
   getConnectedAccount,
@@ -22,7 +23,8 @@ import {
   readGoogleClient,
   readGoogleClientState,
   replaceAccountRefreshToken,
-  saveGoogleClient
+  saveGoogleClient,
+  saveGrantedScopes
 } from '../persistence/account-link.ts';
 import { readAccountRefreshToken, readClientSecret } from '../persistence/credentials.ts';
 import { PersistenceError } from '../persistence/errors.ts';
@@ -90,6 +92,7 @@ export interface GoogleAccountService {
   beginMailboxRead(): void;
   endMailboxRead(): void;
   mailboxAccess(accountId: string, force?: boolean): Promise<string>;
+  modificationGrant(accountId: string): 'ready' | 'readonly' | 'needs-reauth';
   forgetMailboxAccess(accountId: string): void;
   shutdown(): void;
 }
@@ -134,6 +137,7 @@ function toSummary(account: {
   email: string | null;
   displayName: string | null;
   status: string;
+  grantedScopes: string;
 }): GoogleAccountSummary {
   if (account.status !== 'connected' && account.status !== 'needs_reauth') {
     throw new OAuthFlowError('internal');
@@ -142,7 +146,8 @@ function toSummary(account: {
     id: account.id,
     email: account.email,
     displayName: account.displayName,
-    status: account.status
+    status: account.status,
+    canModifyMail: grantAllowsMailChanges(account.grantedScopes.split(' '))
   };
 }
 
@@ -212,6 +217,9 @@ export function createGoogleAccountService(deps: GoogleAccountDependencies): Goo
         refreshed.refreshToken,
         now
       );
+    }
+    if (refreshed.grantedScopes !== null) {
+      saveGrantedScopes(deps.database, accountId, refreshed.grantedScopes, now);
     }
     if (refreshed.expiresIn !== null) {
       const expiresAt = now().getTime() + (refreshed.expiresIn - 60) * 1000;
@@ -359,10 +367,12 @@ export function createGoogleAccountService(deps: GoogleAccountDependencies): Goo
           displayName: identity.displayName,
           email: identity.email,
           refreshToken: tokens.refreshToken,
-          expectedAccountId
+          expectedAccountId,
+          grantedScopes: tokens.grantedScopes
         },
         now
       );
+      forgetAccess(account.id);
       return toSummary(account);
     } catch (error) {
       throw asFlowError(error);
@@ -517,6 +527,12 @@ export function createGoogleAccountService(deps: GoogleAccountDependencies): Goo
     },
     mailboxAccess(accountId: string, force = false) {
       return mailboxAccess(accountId, force);
+    },
+    modificationGrant(accountId: string) {
+      const account = getConnectedAccount(deps.database, accountId);
+      if (account.provider !== 'google') throw new OAuthFlowError('invalid-request');
+      if (account.status !== 'connected') return 'needs-reauth';
+      return grantAllowsMailChanges(account.grantedScopes.split(' ')) ? 'ready' : 'readonly';
     },
     forgetMailboxAccess(accountId: string) {
       forgetAccess(accountId);

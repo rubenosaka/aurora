@@ -16,7 +16,8 @@ const account = {
   id: '00000000-0000-4000-8000-000000000001',
   email: 'ada@example.com',
   displayName: 'Ada',
-  status: 'connected' as const
+  status: 'connected' as const,
+  canModifyMail: true
 };
 
 describe('Google IPC parsing', () => {

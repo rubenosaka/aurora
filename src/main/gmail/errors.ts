@@ -1,5 +1,6 @@
 export const gmailServiceCodes = [
   'invalid-request',
+  'invalid-response',
   'needs-reauth',
   'network',
   'encryption-unavailable',
@@ -9,6 +10,7 @@ export const gmailServiceCodes = [
   'not-found',
   'too-large',
   'permission-denied',
+  'insufficient-scope',
   'gmail-rejected',
   'internal'
 ] as const;
@@ -17,6 +19,7 @@ export type GmailServiceCode = (typeof gmailServiceCodes)[number];
 
 const sentences: Record<GmailServiceCode, string> = {
   'invalid-request': 'Request rejected.',
+  'invalid-response': 'Response rejected.',
   'needs-reauth': 'The saved Google credential can no longer be used.',
   network: 'Aurora could not reach Google.',
   'encryption-unavailable': 'Credential protection is unavailable.',
@@ -26,6 +29,7 @@ const sentences: Record<GmailServiceCode, string> = {
   'not-found': 'This conversation is no longer available.',
   'too-large': 'This conversation is too large to show.',
   'permission-denied': 'Gmail did not allow this request.',
+  'insufficient-scope': 'Reconnect this Google account before changing mail.',
   'gmail-rejected': 'Gmail refused this request.',
   internal: 'Request failed.'
 };

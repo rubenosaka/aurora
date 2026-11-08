@@ -29,7 +29,8 @@ describe('gmail contracts', () => {
             from: 'Ada',
             date: '2026-11-02T12:00:00.000Z',
             snippet: 'Hi',
-            unread: true
+            unread: true,
+            starred: false
           }
         ],
         nextPageToken: 'page-token-1'
@@ -60,6 +61,8 @@ describe('gmail contracts', () => {
       subject: 'Hello',
       date: '2026-11-02T12:00:00.000Z',
       unread: false,
+      starred: false,
+      labelIds: [],
       text: 'Hello',
       html: null,
       imagesOmitted: false,

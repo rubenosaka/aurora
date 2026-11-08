@@ -238,6 +238,15 @@ function isoDate(value: unknown): string | null {
   }
 }
 
+function messageLabels(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids = value.filter(
+    (id): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(id)
+  );
+  if (ids.length > 100) throw new GmailError('unavailable');
+  return ids;
+}
+
 function messageId(value: unknown, fallback: string): string {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : fallback;
 }
@@ -262,7 +271,7 @@ export function decodeConversation(threadId: string, messages: unknown[]): Gmail
       throw new GmailError('too-large');
     const html = htmlSource.length === 0 ? null : sanitizedHtml(htmlSource);
     const headers = headersOf(isRecord(message.payload) ? message.payload.headers : undefined);
-    const unread = Array.isArray(message.labelIds) && message.labelIds.includes('UNREAD');
+    const labelIds = messageLabels(message.labelIds);
     return {
       order: stamp(message.internalDate),
       message: {
@@ -273,7 +282,9 @@ export function decodeConversation(threadId: string, messages: unknown[]): Gmail
         bcc: bounded(headerValue(headers, 'bcc') ?? '', 2000),
         subject: bounded(headerValue(headers, 'subject') ?? '', 998),
         date: isoDate(message.internalDate),
-        unread,
+        unread: labelIds.includes('UNREAD'),
+        starred: labelIds.includes('STARRED'),
+        labelIds,
         text: text.length === 0 ? null : text,
         html,
         imagesOmitted: collected.imagesOmitted,

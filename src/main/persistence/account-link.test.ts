@@ -87,7 +87,8 @@ describe('Google account link', () => {
           displayName: 'Ada',
           email: 'ada@example.com',
           refreshToken: null,
-          expectedAccountId: null
+          expectedAccountId: null,
+          grantedScopes: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
         }),
       (error: unknown) =>
         error instanceof AccountLinkError && error.code === 'missing-refresh-token'
@@ -105,7 +106,8 @@ describe('Google account link', () => {
       displayName: 'Ada',
       email: 'ada@example.com',
       refreshToken: 'refresh-token-one',
-      expectedAccountId: null
+      expectedAccountId: null,
+      grantedScopes: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
     });
     const original = blob(database, created.id);
     const updated = commitAccountConnection(database, cipher, {
@@ -114,7 +116,8 @@ describe('Google account link', () => {
       displayName: 'Ada Lovelace',
       email: 'ada@example.com',
       refreshToken: null,
-      expectedAccountId: created.id
+      expectedAccountId: created.id,
+      grantedScopes: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
     });
     assert.equal(updated.displayName, 'Ada Lovelace');
     assert.equal(updated.status, 'connected');
@@ -132,7 +135,8 @@ describe('Google account link', () => {
       displayName: 'Ada',
       email: 'ada@example.com',
       refreshToken: 'refresh-token-one',
-      expectedAccountId: null
+      expectedAccountId: null,
+      grantedScopes: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
     });
     const original = blob(database, created.id);
     database.exec(`
@@ -149,7 +153,8 @@ describe('Google account link', () => {
         displayName: 'Changed',
         email: 'new@example.com',
         refreshToken: 'refresh-token-two',
-        expectedAccountId: created.id
+        expectedAccountId: created.id,
+        grantedScopes: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
       })
     );
     const account = getConnectedAccount(database, created.id);
@@ -168,7 +173,8 @@ describe('Google account link', () => {
       displayName: 'Ada',
       email: null,
       refreshToken: 'refresh-token-one',
-      expectedAccountId: null
+      expectedAccountId: null,
+      grantedScopes: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
     });
     const original = blob(database, created.id);
     assert.throws(
@@ -179,7 +185,8 @@ describe('Google account link', () => {
           displayName: 'Changed',
           email: 'ada@example.com',
           refreshToken: null,
-          expectedAccountId: created.id
+          expectedAccountId: created.id,
+          grantedScopes: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
         }),
       (error: unknown) => error instanceof AccountLinkError && error.code === 'needs-reauth'
     );
@@ -199,7 +206,8 @@ describe('Google account link', () => {
       displayName: 'Ada',
       email: 'ada@example.com',
       refreshToken: 'refresh-token-one',
-      expectedAccountId: null
+      expectedAccountId: null,
+      grantedScopes: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
     });
     const second = commitAccountConnection(database, cipher, {
       oauthClientId: client.id,
@@ -207,7 +215,8 @@ describe('Google account link', () => {
       displayName: 'Grace',
       email: null,
       refreshToken: 'refresh-token-two',
-      expectedAccountId: null
+      expectedAccountId: null,
+      grantedScopes: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
     });
     const rotated = commitAccountConnection(database, cipher, {
       oauthClientId: client.id,
@@ -215,7 +224,8 @@ describe('Google account link', () => {
       displayName: 'Ada',
       email: 'ada@example.com',
       refreshToken: 'refresh-token-rotated',
-      expectedAccountId: null
+      expectedAccountId: null,
+      grantedScopes: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
     });
     assert.equal(rotated.id, first.id);
     assert.equal(readAccountRefreshToken(database, cipher, first.id), 'refresh-token-rotated');
@@ -228,7 +238,8 @@ describe('Google account link', () => {
           displayName: 'Grace',
           email: null,
           refreshToken: 'refresh-token-other',
-          expectedAccountId: first.id
+          expectedAccountId: first.id,
+          grantedScopes: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
         }),
       (error: unknown) => error instanceof AccountLinkError && error.code === 'account-mismatch'
     );
@@ -246,7 +257,8 @@ describe('Google account link', () => {
       displayName: null,
       email: null,
       refreshToken: 'refresh-token-one',
-      expectedAccountId: null
+      expectedAccountId: null,
+      grantedScopes: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
     });
     const original = blob(database, account.id);
     noteGoogleReauth(database, account.id);
@@ -274,7 +286,8 @@ describe('Google account link', () => {
       displayName: null,
       email: null,
       refreshToken: 'refresh-token-one',
-      expectedAccountId: null
+      expectedAccountId: null,
+      grantedScopes: 'openid email profile https://www.googleapis.com/auth/gmail.modify'
     });
     assert.throws(
       () => saveGoogleClientId(database, 'other-client.apps.googleusercontent.com'),

@@ -35,6 +35,31 @@ export interface GmailReader {
     threadId: string
   ): Promise<{ id: string; messages: GmailMessage[] }>;
   openLink(url: string): Promise<{ opened: true }>;
+  markRead(accountId: string, threadId: string): Promise<{ threadId: string; unread: boolean }>;
+  markUnread(accountId: string, threadId: string): Promise<{ threadId: string; unread: boolean }>;
+  archiveThread(accountId: string, threadId: string): Promise<{ threadId: string }>;
+  trashThread(accountId: string, threadId: string): Promise<{ threadId: string }>;
+  untrashThread(accountId: string, threadId: string): Promise<{ threadId: string }>;
+  addLabel(
+    accountId: string,
+    threadId: string,
+    labelId: string
+  ): Promise<{ threadId: string; labelId: string }>;
+  removeLabel(
+    accountId: string,
+    threadId: string,
+    labelId: string
+  ): Promise<{ threadId: string; labelId: string }>;
+  starMessage(
+    accountId: string,
+    threadId: string,
+    messageId: string
+  ): Promise<{ threadId: string; messageId: string; starred: boolean }>;
+  unstarMessage(
+    accountId: string,
+    threadId: string,
+    messageId: string
+  ): Promise<{ threadId: string; messageId: string; starred: boolean }>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -286,6 +311,9 @@ function summaryOf(
     snippet: clip(decodeSnippetReferences(snippet), 500),
     unread: messages.some(
       (message) => Array.isArray(message.labelIds) && message.labelIds.includes('UNREAD')
+    ),
+    starred: messages.some(
+      (message) => Array.isArray(message.labelIds) && message.labelIds.includes('STARRED')
     )
   };
 }
@@ -311,17 +339,37 @@ async function mapLimit<T, R>(
   return results;
 }
 
+interface GmailRequest {
+  method: 'GET' | 'POST';
+  body?: string;
+  mutation?: boolean;
+}
+
+const readRequest: GmailRequest = { method: 'GET' };
+
 export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
   const sleep =
     deps.sleep ??
     ((milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  const busyThreads = new Set<string>();
 
-  async function gmailJson(token: string, url: string, attempt: number): Promise<unknown> {
+  async function gmailJson(
+    token: string,
+    url: string,
+    request: GmailRequest,
+    attempt: number
+  ): Promise<unknown> {
     let response: Response;
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${token}`,
+      accept: 'application/json'
+    };
+    if (request.body !== undefined) headers['content-type'] = 'application/json';
     try {
       response = await deps.fetchImpl(url, {
-        method: 'GET',
-        headers: { authorization: `Bearer ${token}`, accept: 'application/json' },
+        method: request.method,
+        headers,
+        body: request.body,
         signal: AbortSignal.timeout(10_000)
       });
     } catch {
@@ -349,20 +397,29 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
       if (failure.code === 'rate-limited') {
         await sleep(retryDelay(response.headers.get('retry-after')));
       }
-      return gmailJson(token, url, 1);
+      return gmailJson(token, url, request, 1);
     }
     if (response.status !== 401) recordGmailFailure(response.status, failure.reason);
-    throw new GmailError(failure.code, response.status, failure.reason);
+    throw new GmailError(
+      mutationCode(request, response.status, failure),
+      response.status,
+      failure.reason
+    );
   }
 
-  async function authed(accountId: string, url: string, retried = false): Promise<unknown> {
+  async function authed(
+    accountId: string,
+    url: string,
+    request: GmailRequest,
+    retried = false
+  ): Promise<unknown> {
     const token = await deps.accounts.mailboxAccess(accountId, retried);
     try {
-      return await gmailJson(token, url, 0);
+      return await gmailJson(token, url, request, 0);
     } catch (error) {
       if (error instanceof GmailError && error.status === 401 && !retried) {
         deps.accounts.forgetMailboxAccess(accountId);
-        return authed(accountId, url, true);
+        return authed(accountId, url, request, true);
       }
       if (error instanceof GmailError && error.status === 401) {
         deps.accounts.forgetMailboxAccess(accountId);
@@ -389,7 +446,7 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
   }
 
   async function loadLabels(accountId: string): Promise<GmailLabel[]> {
-    const payload = await authed(accountId, `${gmailRoot}/labels`);
+    const payload = await authed(accountId, `${gmailRoot}/labels`, readRequest);
     const labels = visibleLabels(payload);
     const value = { labels };
     guard(value, listPayloadLimit);
@@ -424,7 +481,7 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
         if (query !== null || input.labelId === 'SPAM' || input.labelId === 'TRASH') {
           url.searchParams.set('includeSpamTrash', 'true');
         }
-        const payload = await authed(input.accountId, url.href);
+        const payload = await authed(input.accountId, url.href, readRequest);
         if (!isRecord(payload)) throw new GmailError('unavailable');
         const listed = Array.isArray(payload.threads) ? payload.threads : [];
         if (listed.length > 20) throw new GmailError('unavailable');
@@ -434,7 +491,7 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
           metadataUrl.searchParams.set('format', 'metadata');
           for (const header of metadataHeaders)
             metadataUrl.searchParams.append('metadataHeaders', header);
-          const metadata = await authed(input.accountId, metadataUrl.href);
+          const metadata = await authed(input.accountId, metadataUrl.href, readRequest);
           return summaryOf(thread.snippet, metadata, thread.id);
         });
         const nextPageToken =
@@ -456,7 +513,7 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
       return withRead(accountId, async () => {
         const url = new URL(`${gmailRoot}/threads/${threadId}`);
         url.searchParams.set('format', 'full');
-        const payload = await authed(accountId, url.href);
+        const payload = await authed(accountId, url.href, readRequest);
         if (!isRecord(payload) || !Array.isArray(payload.messages)) {
           throw new GmailError('unavailable');
         }
@@ -475,6 +532,165 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
         throw new GmailError('internal');
       }
       return { opened: true };
+    },
+    markRead(accountId, threadId) {
+      return changeThread(accountId, threadId, { removeLabelIds: ['UNREAD'] }, false);
+    },
+    markUnread(accountId, threadId) {
+      return changeThread(accountId, threadId, { addLabelIds: ['UNREAD'] }, true);
+    },
+    archiveThread(accountId, threadId) {
+      return moveThread(accountId, threadId, { removeLabelIds: ['INBOX'] });
+    },
+    trashThread(accountId, threadId) {
+      return relocateThread(accountId, threadId, 'trash');
+    },
+    untrashThread(accountId, threadId) {
+      return relocateThread(accountId, threadId, 'untrash');
+    },
+    addLabel(accountId, threadId, labelId) {
+      return changeUserLabel(accountId, threadId, labelId, true);
+    },
+    removeLabel(accountId, threadId, labelId) {
+      return changeUserLabel(accountId, threadId, labelId, false);
+    },
+    starMessage(accountId, threadId, messageId) {
+      return changeStar(accountId, threadId, messageId, true);
+    },
+    unstarMessage(accountId, threadId, messageId) {
+      return changeStar(accountId, threadId, messageId, false);
     }
   };
+
+  function reserve(accountId: string, threadId: string): () => void {
+    const key = `${accountId}\n${threadId}`;
+    if (busyThreads.has(key)) throw new GmailError('operation-in-progress');
+    busyThreads.add(key);
+    return () => {
+      busyThreads.delete(key);
+    };
+  }
+
+  async function mutate<T>(accountId: string, threadId: string, run: () => Promise<T>): Promise<T> {
+    if (!isGoogleAccountId(accountId) || !isGmailId(threadId)) {
+      throw new GmailError('invalid-request');
+    }
+    const release = reserve(accountId, threadId);
+    try {
+      return await withRead(accountId, async () => {
+        const grant = deps.accounts.modificationGrant(accountId);
+        if (grant === 'needs-reauth') throw new GmailError('needs-reauth');
+        if (grant !== 'ready') throw new GmailError('insufficient-scope');
+        return run();
+      });
+    } finally {
+      release();
+    }
+  }
+
+  async function post(accountId: string, url: string, body: Record<string, string[]> | null) {
+    return authed(
+      accountId,
+      url,
+      body === null
+        ? { method: 'POST', mutation: true }
+        : { method: 'POST', mutation: true, body: JSON.stringify(body) }
+    );
+  }
+
+  function accepted(payload: unknown, id: string): void {
+    if (!isRecord(payload) || payload.id !== id) throw new GmailError('invalid-response');
+  }
+
+  async function changeThread(
+    accountId: string,
+    threadId: string,
+    body: Record<string, string[]>,
+    unread: boolean
+  ): Promise<{ threadId: string; unread: boolean }> {
+    return mutate(accountId, threadId, async () => {
+      const payload = await post(accountId, `${gmailRoot}/threads/${threadId}/modify`, body);
+      accepted(payload, threadId);
+      return { threadId, unread };
+    });
+  }
+
+  async function moveThread(
+    accountId: string,
+    threadId: string,
+    body: Record<string, string[]>
+  ): Promise<{ threadId: string }> {
+    return mutate(accountId, threadId, async () => {
+      const payload = await post(accountId, `${gmailRoot}/threads/${threadId}/modify`, body);
+      accepted(payload, threadId);
+      return { threadId };
+    });
+  }
+
+  async function relocateThread(
+    accountId: string,
+    threadId: string,
+    action: 'trash' | 'untrash'
+  ): Promise<{ threadId: string }> {
+    return mutate(accountId, threadId, async () => {
+      const payload = await post(accountId, `${gmailRoot}/threads/${threadId}/${action}`, null);
+      accepted(payload, threadId);
+      return { threadId };
+    });
+  }
+
+  async function changeUserLabel(
+    accountId: string,
+    threadId: string,
+    labelId: string,
+    add: boolean
+  ): Promise<{ threadId: string; labelId: string }> {
+    if (!isGmailId(labelId)) throw new GmailError('invalid-request');
+    return mutate(accountId, threadId, async () => {
+      const labels = await loadLabels(accountId);
+      if (!labels.some((label) => label.id === labelId && label.type === 'user')) {
+        throw new GmailError('invalid-request');
+      }
+      const body: Record<string, string[]> = add
+        ? { addLabelIds: [labelId] }
+        : { removeLabelIds: [labelId] };
+      const payload = await post(accountId, `${gmailRoot}/threads/${threadId}/modify`, body);
+      accepted(payload, threadId);
+      return { threadId, labelId };
+    });
+  }
+
+  async function changeStar(
+    accountId: string,
+    threadId: string,
+    messageId: string,
+    starred: boolean
+  ): Promise<{ threadId: string; messageId: string; starred: boolean }> {
+    if (!isGmailId(messageId)) throw new GmailError('invalid-request');
+    return mutate(accountId, threadId, async () => {
+      const body: Record<string, string[]> = starred
+        ? { addLabelIds: ['STARRED'] }
+        : { removeLabelIds: ['STARRED'] };
+      const payload = await post(accountId, `${gmailRoot}/messages/${messageId}/modify`, body);
+      accepted(payload, messageId);
+      return { threadId, messageId, starred };
+    });
+  }
+}
+
+function mutationCode(
+  request: GmailRequest,
+  status: number,
+  failure: { code: GmailError['code']; reason: string | null }
+): GmailError['code'] {
+  if (request.mutation !== true) return failure.code;
+  if (status === 400) return 'gmail-rejected';
+  if (
+    status === 403 &&
+    (failure.reason === 'insufficientPermissions' ||
+      failure.reason === 'ACCESS_TOKEN_SCOPE_INSUFFICIENT')
+  ) {
+    return 'insufficient-scope';
+  }
+  return failure.code;
 }

@@ -8,15 +8,42 @@ const ada: GoogleAccountSummary = {
   id: '00000000-0000-4000-8000-000000000001',
   email: 'ada@example.com',
   displayName: 'Ada',
-  status: 'connected'
+  status: 'connected',
+  canModifyMail: true
 };
 
 const grace: GoogleAccountSummary = {
   id: '00000000-0000-4000-8000-000000000002',
   email: 'grace@example.com',
   displayName: 'Grace',
-  status: 'connected'
+  status: 'connected',
+  canModifyMail: true
 };
+
+function mailActions(): Pick<
+  GmailApi,
+  | 'markRead'
+  | 'markUnread'
+  | 'archiveThread'
+  | 'trashThread'
+  | 'untrashThread'
+  | 'addLabel'
+  | 'removeLabel'
+  | 'starMessage'
+  | 'unstarMessage'
+> {
+  return {
+    markRead: async () => ({ threadId: 'threadsame', unread: false }),
+    markUnread: async () => ({ threadId: 'threadsame', unread: true }),
+    archiveThread: async () => ({ threadId: 'threadsame' }),
+    trashThread: async () => ({ threadId: 'threadsame' }),
+    untrashThread: async () => ({ threadId: 'threadsame' }),
+    addLabel: async () => ({ threadId: 'threadsame', labelId: 'Label_1' }),
+    removeLabel: async () => ({ threadId: 'threadsame', labelId: 'Label_1' }),
+    starMessage: async () => ({ threadId: 'threadsame', messageId: 'messageone', starred: true }),
+    unstarMessage: async () => ({ threadId: 'threadsame', messageId: 'messageone', starred: false })
+  };
+}
 
 const labels = {
   labels: [{ id: 'INBOX', name: 'INBOX', type: 'system' as const, unreadCount: 1 }]
@@ -55,6 +82,7 @@ describe('MailView', () => {
   it('opens a link only after a click', async () => {
     const opened: string[] = [];
     const gmailApi: GmailApi = {
+      ...mailActions(),
       listLabels: async () => labels,
       listThreads: async () => ({
         threads: [
@@ -64,7 +92,8 @@ describe('MailView', () => {
             from: 'Ada',
             date: '2026-11-02T12:00:00.000Z',
             snippet: 'Hi',
-            unread: true
+            unread: true,
+            starred: false
           }
         ],
         nextPageToken: null
@@ -81,6 +110,8 @@ describe('MailView', () => {
             subject: 'Hello',
             date: '2026-11-02T12:00:00.000Z',
             unread: true,
+            starred: false,
+            labelIds: ['INBOX', 'UNREAD'],
             text: null,
             html: '<a href="https://example.com/letter">Letter</a>',
             imagesOmitted: false,
@@ -124,6 +155,7 @@ describe('MailView', () => {
     const second = deferred<GmailThreadList>();
     const calls: string[] = [];
     const gmailApi: GmailApi = {
+      ...mailActions(),
       listLabels: async () => labels,
       listThreads: (query) => {
         calls.push(query.accountId);
@@ -162,7 +194,8 @@ describe('MailView', () => {
           from: 'Grace',
           date: '2026-11-02T12:00:00.000Z',
           snippet: null,
-          unread: false
+          unread: false,
+          starred: false
         }
       ],
       nextPageToken: null
@@ -174,6 +207,7 @@ describe('MailView', () => {
 
   it('activates a full row from the keyboard and keeps unread distinct', async () => {
     const gmailApi: GmailApi = {
+      ...mailActions(),
       listLabels: async () => labels,
       listThreads: async () => ({
         threads: [
@@ -183,7 +217,8 @@ describe('MailView', () => {
             from: 'Ada',
             date: '2026-11-02T12:00:00.000Z',
             snippet: 'Hi',
-            unread: true
+            unread: true,
+            starred: false
           },
           {
             id: 'threadread',
@@ -191,7 +226,8 @@ describe('MailView', () => {
             from: 'Bea',
             date: '2026-11-02T12:00:00.000Z',
             snippet: 'Seen',
-            unread: false
+            unread: false,
+            starred: false
           }
         ],
         nextPageToken: null
@@ -204,13 +240,13 @@ describe('MailView', () => {
       global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } }
     });
     await flushPromises();
-    const row = wrapper.get('ul li button');
+    const row = wrapper.get('ul li button.mail-row');
     expect(row.element.tagName).toBe('BUTTON');
     expect((row.element as HTMLButtonElement).tabIndex).toBe(0);
     expect(row.classes()).toContain('is-unread');
     expect(row.text()).toContain('Unread');
     expect(row.find('.mail-unread.is-on').exists()).toBe(true);
-    const read = wrapper.findAll('ul li button')[1];
+    const read = wrapper.findAll('ul li button.mail-row')[1];
     expect(read?.classes().includes('is-unread')).toBe(false);
     expect(read?.text().includes('Unread')).toBe(false);
     expect(read?.find('.mail-unread.is-on').exists()).toBe(false);
@@ -220,11 +256,70 @@ describe('MailView', () => {
     expect(wrapper.find('input[aria-label="Search Gmail"]').exists()).toBe(false);
     expect(wrapper.find('[aria-label="Labels"]').exists()).toBe(false);
     expect(wrapper.get('button').text()).toContain('Back');
+    expect(wrapper.find('nav[aria-label="Labels"]').exists()).toBe(false);
+  });
+
+  it('lays the folder sidebar beside a two-line row', async () => {
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => ({
+        labels: [
+          { id: 'INBOX', name: 'INBOX', type: 'system', unreadCount: 1 },
+          { id: 'SENT', name: 'SENT', type: 'system', unreadCount: null },
+          { id: 'Label_1', name: 'Trips', type: 'user', unreadCount: null }
+        ]
+      }),
+      listThreads: async () => ({
+        threads: [
+          {
+            id: 'threadsame',
+            subject: 'Hello',
+            from: 'Ada',
+            date: '2026-11-02T12:00:00.000Z',
+            snippet: 'Hi there',
+            unread: true,
+            starred: false
+          }
+        ],
+        nextPageToken: null
+      }),
+      readThread: async () => ({ id: 'threadsame', messages: [] }),
+      openLink: async () => ({ opened: true })
+    };
+    const wrapper = mount(MailView, {
+      props: { googleApi: accountsApi([ada]), gmailApi }
+    });
+    await flushPromises();
+    const folders = wrapper.get('nav.mail-folders');
+    expect(folders.findAll('.folder-name').map((button) => button.text())).toEqual([
+      'INBOX',
+      'SENT',
+      'Trips'
+    ]);
+    const line = wrapper.get('.mail-row-line');
+    expect(line.get('.mail-line-primary').text()).toContain('Hello');
+    expect(line.get('.mail-line-primary').text()).toContain('Hi there');
+    expect(line.get('.mail-sender').text()).toBe('Ada');
+    expect(line.get('.mail-date').text().length).toBeGreaterThan(0);
+    const actions = line.get('.mail-row-actions');
+    expect(actions.element.parentElement).toBe(line.element);
+    expect(actions.element.closest('button')).toBeNull();
+    expect(line.get('.mail-row').element.contains(actions.element)).toBe(false);
+    const toggle = wrapper.get('[aria-label="Folders"]');
+    expect(toggle.element.tagName).toBe('BUTTON');
+    expect(toggle.attributes('aria-expanded')).toBe('false');
+    expect(toggle.classes()).toContain('control');
+    await toggle.trigger('click');
+    expect(toggle.attributes('aria-expanded')).toBe('true');
+    expect(wrapper.get('.mail-workspace').classes()).toContain('is-folders-open');
+    await wrapper.get('nav.mail-folders button').trigger('click');
+    expect(wrapper.get('.mail-workspace').classes()).not.toContain('is-folders-open');
   });
 
   it('selects a folder and keeps the active state after the pointer leaves', async () => {
     const queries: Array<string | null> = [];
     const gmailApi: GmailApi = {
+      ...mailActions(),
       listLabels: async () => ({
         labels: [
           { id: 'INBOX', name: 'INBOX', type: 'system', unreadCount: 2 },
@@ -255,6 +350,7 @@ describe('MailView', () => {
 
   it('keeps a sanitized table inside the reading column', async () => {
     const gmailApi: GmailApi = {
+      ...mailActions(),
       listLabels: async () => labels,
       listThreads: async () => ({
         threads: [
@@ -264,7 +360,8 @@ describe('MailView', () => {
             from: 'Ada',
             date: '2026-11-02T12:00:00.000Z',
             snippet: 'Rows',
-            unread: false
+            unread: false,
+            starred: false
           }
         ],
         nextPageToken: null
@@ -281,6 +378,8 @@ describe('MailView', () => {
             subject: 'Table',
             date: '2026-11-02T12:00:00.000Z',
             unread: false,
+            starred: false,
+            labelIds: [],
             text: null,
             html: '<table><tr><td>Cell</td></tr></table><p>Note</p>',
             imagesOmitted: false,
@@ -303,5 +402,152 @@ describe('MailView', () => {
     expect(body.find('td').text()).toBe('Cell');
     expect(body.find('p').text()).toBe('Note');
     expect(wrapper.get('.mail-reading').classes()).toContain('mail-body');
+  });
+
+  it('archives from the keyboard, rolls back a failed change, and asks before Trash', async () => {
+    let failArchive = false;
+    const calls: string[] = [];
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => labels,
+      listThreads: async () => ({
+        threads: [
+          {
+            id: 'threadsame',
+            subject: 'Hello',
+            from: 'Ada',
+            date: '2026-11-02T12:00:00.000Z',
+            snippet: 'Hi',
+            unread: true,
+            starred: true
+          }
+        ],
+        nextPageToken: null
+      }),
+      readThread: async () => ({
+        id: 'threadsame',
+        messages: [
+          {
+            id: 'messageone',
+            from: 'Ada',
+            to: null,
+            cc: null,
+            bcc: null,
+            subject: 'Hello',
+            date: '2026-11-02T12:00:00.000Z',
+            unread: true,
+            starred: false,
+            labelIds: ['INBOX', 'UNREAD'],
+            text: 'Hello',
+            html: null,
+            imagesOmitted: false,
+            attachments: []
+          }
+        ]
+      }),
+      openLink: async () => ({ opened: true }),
+      archiveThread: async () => {
+        calls.push('archive');
+        if (failArchive) throw new GmailIpcError('network');
+        return { threadId: 'threadsame' };
+      },
+      trashThread: async () => {
+        calls.push('trash');
+        return { threadId: 'threadsame' };
+      },
+      starMessage: async () => {
+        calls.push('star');
+        return { threadId: 'threadsame', messageId: 'messageone', starred: true };
+      }
+    };
+    const wrapper = mount(MailView, {
+      props: { googleApi: accountsApi([ada]), gmailApi },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } }
+    });
+    await flushPromises();
+    const archive = wrapper.get('[aria-label="Archive"]');
+    expect(archive.element.parentElement?.tagName).not.toBe('BUTTON');
+    expect(archive.element.tagName).toBe('BUTTON');
+    failArchive = true;
+    await archive.trigger('keydown.enter');
+    await archive.trigger('click');
+    await flushPromises();
+    expect(calls).toEqual(['archive']);
+    expect(wrapper.text()).toContain('could not archive');
+    expect(wrapper.find('.mail-row').exists()).toBe(true);
+    failArchive = false;
+    await wrapper.get('[aria-label="Archive"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.mail-row').exists()).toBe(false);
+    const listed = mount(MailView, {
+      props: { googleApi: accountsApi([ada]), gmailApi },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } }
+    });
+    await flushPromises();
+    await listed.get('[aria-label="Move to Trash"]').trigger('click');
+    expect(listed.get('[role="dialog"]').text()).toContain('Move to Trash?');
+    await listed.get('[role="dialog"] button').trigger('keydown.esc');
+    expect(calls.includes('trash')).toBe(false);
+    await listed.get('.mail-row').trigger('click');
+    await flushPromises();
+    await listed.get('[aria-label="Star"]').trigger('click');
+    await flushPromises();
+    expect(calls).toContain('star');
+    const readonly = mount(MailView, {
+      props: {
+        googleApi: accountsApi([{ ...ada, canModifyMail: false }]),
+        gmailApi
+      },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } }
+    });
+    await flushPromises();
+    const before = calls.length;
+    await readonly.get('[aria-label="Mark as read"]').trigger('click');
+    await flushPromises();
+    expect(calls.length).toBe(before);
+    expect(readonly.text()).toContain('Reconnect');
+  });
+
+  it('keeps a search row and offers a refresh after a change', async () => {
+    const queries: Array<string | null> = [];
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => labels,
+      listThreads: async (query) => {
+        queries.push(query.query);
+        return {
+          threads: [
+            {
+              id: 'threadsame',
+              subject: 'Hello',
+              from: 'Ada',
+              date: '2026-11-02T12:00:00.000Z',
+              snippet: 'Hi',
+              unread: true,
+              starred: false
+            }
+          ],
+          nextPageToken: null
+        };
+      },
+      readThread: async () => ({ id: 'threadsame', messages: [] }),
+      openLink: async () => ({ opened: true })
+    };
+    const wrapper = mount(MailView, {
+      props: { googleApi: accountsApi([ada]), gmailApi },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } }
+    });
+    await flushPromises();
+    await wrapper.get('[aria-label="Search Gmail"]').setValue('from:ada@example.com');
+    await wrapper.get('form').trigger('submit');
+    await flushPromises();
+    await wrapper.get('[aria-label="Archive"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('.mail-row').exists()).toBe(true);
+    expect(wrapper.text()).toContain('may no longer match');
+    const refresh = wrapper.findAll('button').find((button) => button.text() === 'Refresh');
+    await refresh?.trigger('click');
+    await flushPromises();
+    expect(queries.at(-1)).toBe('from:ada@example.com');
   });
 });

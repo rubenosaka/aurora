@@ -4,12 +4,30 @@ export const gmailLabelsChannel = 'gmail:labels';
 export const gmailThreadsChannel = 'gmail:threads';
 export const gmailThreadChannel = 'gmail:thread';
 export const gmailOpenLinkChannel = 'gmail:open-link';
+export const gmailMarkReadChannel = 'gmail:mark-read';
+export const gmailMarkUnreadChannel = 'gmail:mark-unread';
+export const gmailArchiveThreadChannel = 'gmail:archive-thread';
+export const gmailTrashThreadChannel = 'gmail:trash-thread';
+export const gmailUntrashThreadChannel = 'gmail:untrash-thread';
+export const gmailAddLabelChannel = 'gmail:add-label';
+export const gmailRemoveLabelChannel = 'gmail:remove-label';
+export const gmailStarMessageChannel = 'gmail:star-message';
+export const gmailUnstarMessageChannel = 'gmail:unstar-message';
 
 export const gmailChannels = [
   gmailLabelsChannel,
   gmailThreadsChannel,
   gmailThreadChannel,
-  gmailOpenLinkChannel
+  gmailOpenLinkChannel,
+  gmailMarkReadChannel,
+  gmailMarkUnreadChannel,
+  gmailArchiveThreadChannel,
+  gmailTrashThreadChannel,
+  gmailUntrashThreadChannel,
+  gmailAddLabelChannel,
+  gmailRemoveLabelChannel,
+  gmailStarMessageChannel,
+  gmailUnstarMessageChannel
 ] as const;
 
 export type GmailChannel = (typeof gmailChannels)[number];
@@ -27,6 +45,7 @@ export const gmailErrorCodes = [
   'not-found',
   'too-large',
   'permission-denied',
+  'insufficient-scope',
   'gmail-rejected',
   'internal'
 ] as const;
@@ -49,6 +68,7 @@ const messages: Record<GmailErrorCode, string> = {
   'not-found': 'This conversation is no longer available.',
   'too-large': 'This conversation is too large to show.',
   'permission-denied': 'Gmail did not allow this request.',
+  'insufficient-scope': 'Reconnect this Google account before changing mail.',
   'gmail-rejected': 'Gmail refused this request.',
   internal: 'Request failed.'
 };
@@ -87,6 +107,7 @@ export interface GmailThreadSummary {
   date: string | null;
   snippet: string | null;
   unread: boolean;
+  starred: boolean;
 }
 
 export interface GmailThreadList {
@@ -109,6 +130,8 @@ export interface GmailMessage {
   subject: string | null;
   date: string | null;
   unread: boolean;
+  starred: boolean;
+  labelIds: string[];
   text: string | null;
   html: string | null;
   imagesOmitted: boolean;
@@ -122,6 +145,26 @@ export interface GmailThread {
 
 export interface GmailOpenedLink {
   opened: true;
+}
+
+export interface GmailReadState {
+  threadId: string;
+  unread: boolean;
+}
+
+export interface GmailThreadChanged {
+  threadId: string;
+}
+
+export interface GmailLabelChanged {
+  threadId: string;
+  labelId: string;
+}
+
+export interface GmailStarChanged {
+  threadId: string;
+  messageId: string;
+  starred: boolean;
 }
 
 export interface GmailThreadQuery {
@@ -211,14 +254,23 @@ function isLabel(value: unknown): value is GmailLabel {
   return isUnreadCount(value.unreadCount);
 }
 
+function isLabelIdList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length <= 100 && value.every((id) => isGmailId(id));
+}
+
 function isSummary(value: unknown): value is GmailThreadSummary {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ['id', 'subject', 'from', 'date', 'snippet', 'unread'])
+    !hasExactKeys(value, ['id', 'subject', 'from', 'date', 'snippet', 'unread', 'starred'])
   ) {
     return false;
   }
-  if (!isGmailId(value.id) || typeof value.unread !== 'boolean') return false;
+  if (
+    !isGmailId(value.id) ||
+    typeof value.unread !== 'boolean' ||
+    typeof value.starred !== 'boolean'
+  )
+    return false;
   if (boundedText(value.subject, 998) === undefined) return false;
   if (boundedText(value.from, 2000) === undefined) return false;
   if (boundedText(value.snippet, 500) === undefined) return false;
@@ -251,6 +303,8 @@ function isMessage(value: unknown): value is GmailMessage {
       'subject',
       'date',
       'unread',
+      'starred',
+      'labelIds',
       'text',
       'html',
       'imagesOmitted',
@@ -259,7 +313,14 @@ function isMessage(value: unknown): value is GmailMessage {
   ) {
     return false;
   }
-  if (!isGmailId(value.id) || typeof value.unread !== 'boolean') return false;
+  if (
+    !isGmailId(value.id) ||
+    typeof value.unread !== 'boolean' ||
+    typeof value.starred !== 'boolean' ||
+    !isLabelIdList(value.labelIds)
+  ) {
+    return false;
+  }
   if (typeof value.imagesOmitted !== 'boolean' || !Array.isArray(value.attachments)) return false;
   if (value.attachments.length > 100) return false;
   if (boundedText(value.from, 2000) === undefined) return false;
@@ -344,6 +405,50 @@ export function parseGmailOpenedLink(value: unknown): GmailOpenedLink | null {
   return { opened: true };
 }
 
+export function parseGmailReadState(value: unknown): GmailReadState | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['threadId', 'unread']) ||
+    !isGmailId(value.threadId) ||
+    typeof value.unread !== 'boolean'
+  ) {
+    return null;
+  }
+  return { threadId: value.threadId, unread: value.unread };
+}
+
+export function parseGmailThreadChanged(value: unknown): GmailThreadChanged | null {
+  if (!isRecord(value) || !hasExactKeys(value, ['threadId']) || !isGmailId(value.threadId)) {
+    return null;
+  }
+  return { threadId: value.threadId };
+}
+
+export function parseGmailLabelChanged(value: unknown): GmailLabelChanged | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['threadId', 'labelId']) ||
+    !isGmailId(value.threadId) ||
+    !isGmailId(value.labelId)
+  ) {
+    return null;
+  }
+  return { threadId: value.threadId, labelId: value.labelId };
+}
+
+export function parseGmailStarChanged(value: unknown): GmailStarChanged | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['threadId', 'messageId', 'starred']) ||
+    !isGmailId(value.threadId) ||
+    !isGmailId(value.messageId) ||
+    typeof value.starred !== 'boolean'
+  ) {
+    return null;
+  }
+  return { threadId: value.threadId, messageId: value.messageId, starred: value.starred };
+}
+
 export function parseGmailThreadQuery(value: unknown): GmailThreadQuery | null {
   if (
     !isRecord(value) ||
@@ -377,6 +482,31 @@ export interface GmailBridge {
   listThreads(query: GmailThreadQuery): Promise<GmailResult<GmailThreadList>>;
   readThread(accountId: string, threadId: string): Promise<GmailResult<GmailThread>>;
   openLink(url: string): Promise<GmailResult<GmailOpenedLink>>;
+  markRead(accountId: string, threadId: string): Promise<GmailResult<GmailReadState>>;
+  markUnread(accountId: string, threadId: string): Promise<GmailResult<GmailReadState>>;
+  archiveThread(accountId: string, threadId: string): Promise<GmailResult<GmailThreadChanged>>;
+  trashThread(accountId: string, threadId: string): Promise<GmailResult<GmailThreadChanged>>;
+  untrashThread(accountId: string, threadId: string): Promise<GmailResult<GmailThreadChanged>>;
+  addLabel(
+    accountId: string,
+    threadId: string,
+    labelId: string
+  ): Promise<GmailResult<GmailLabelChanged>>;
+  removeLabel(
+    accountId: string,
+    threadId: string,
+    labelId: string
+  ): Promise<GmailResult<GmailLabelChanged>>;
+  starMessage(
+    accountId: string,
+    threadId: string,
+    messageId: string
+  ): Promise<GmailResult<GmailStarChanged>>;
+  unstarMessage(
+    accountId: string,
+    threadId: string,
+    messageId: string
+  ): Promise<GmailResult<GmailStarChanged>>;
 }
 
 export interface GmailApi {
@@ -384,4 +514,13 @@ export interface GmailApi {
   listThreads(query: GmailThreadQuery): Promise<GmailThreadList>;
   readThread(accountId: string, threadId: string): Promise<GmailThread>;
   openLink(url: string): Promise<GmailOpenedLink>;
+  markRead(accountId: string, threadId: string): Promise<GmailReadState>;
+  markUnread(accountId: string, threadId: string): Promise<GmailReadState>;
+  archiveThread(accountId: string, threadId: string): Promise<GmailThreadChanged>;
+  trashThread(accountId: string, threadId: string): Promise<GmailThreadChanged>;
+  untrashThread(accountId: string, threadId: string): Promise<GmailThreadChanged>;
+  addLabel(accountId: string, threadId: string, labelId: string): Promise<GmailLabelChanged>;
+  removeLabel(accountId: string, threadId: string, labelId: string): Promise<GmailLabelChanged>;
+  starMessage(accountId: string, threadId: string, messageId: string): Promise<GmailStarChanged>;
+  unstarMessage(accountId: string, threadId: string, messageId: string): Promise<GmailStarChanged>;
 }

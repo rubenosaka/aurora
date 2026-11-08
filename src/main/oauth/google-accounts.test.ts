@@ -106,6 +106,8 @@ interface Mode {
   hangToken: boolean;
   revoke: 'ok' | 'hang' | 'throw' | 'denied';
   iss: string | null;
+  grantedScope: string;
+  expiresIn: number | null;
 }
 
 function harness(input: { flowTimeoutMs?: number; revokeTimeoutMs?: number } = {}) {
@@ -124,7 +126,9 @@ function harness(input: { flowTimeoutMs?: number; revokeTimeoutMs?: number } = {
     tokenError: null,
     hangToken: false,
     revoke: 'ok',
-    iss: null
+    iss: null,
+    grantedScope: 'openid email profile https://www.googleapis.com/auth/gmail.modify',
+    expiresIn: null
   };
   const fetchImpl: typeof fetch = async (inputUrl, init) => {
     const url =
@@ -175,10 +179,12 @@ function harness(input: { flowTimeoutMs?: number; revokeTimeoutMs?: number } = {
     }
     const auth = new URL(openedUrl);
     const nonce = auth.searchParams.get('nonce') ?? '';
-    const body: Record<string, string> = {
+    const body: Record<string, string | number> = {
       id_token: idToken(nonce, mode.sub, mode.name),
-      access_token: 'access-token-value'
+      access_token: 'access-token-value',
+      scope: mode.grantedScope
     };
+    if (mode.expiresIn !== null) body.expires_in = mode.expiresIn;
     if (mode.refreshToken !== null) body.refresh_token = mode.refreshToken;
     return Response.json(body);
   };
@@ -554,5 +560,51 @@ describe('Google account service', () => {
       plain.tokenBodies.some((body) => body.includes('client_secret=')),
       false
     );
+  });
+
+  it('keeps a saved account when the new grant cannot change mail and drops the cached token after success', async () => {
+    const flow = harness();
+    flow.service.saveClientId(clientId);
+    flow.mode.grantedScope = 'openid email profile https://www.googleapis.com/auth/gmail.readonly';
+    flow.arm();
+    const denied = codeOf(flow.service.connect());
+    await flow.callback();
+    assert.equal(await denied, 'scope-denied');
+    assert.equal(flow.service.listAccounts().length, 0);
+    flow.mode.grantedScope = 'openid email profile https://www.googleapis.com/auth/gmail.modify';
+    flow.arm();
+    const pending = flow.service.connect();
+    await flow.callback();
+    const account = await pending;
+    assert.equal(account.canModifyMail, true);
+    flow.mode.expiresIn = 3600;
+    const tokenCalls = () => flow.fetchCalls.filter((url) => url.endsWith('/token')).length;
+    const before = tokenCalls();
+    assert.equal(await flow.service.mailboxAccess(account.id), 'access-token-value');
+    assert.equal(tokenCalls(), before + 1);
+    assert.equal(await flow.service.mailboxAccess(account.id), 'access-token-value');
+    assert.equal(tokenCalls(), before + 1);
+    flow.mode.refreshToken = 'refresh-token-two';
+    flow.arm();
+    const reconnected = flow.service.reconnect(account.id);
+    await flow.callback();
+    assert.equal((await reconnected).canModifyMail, true);
+    assert.equal(savedToken(flow.database, flow.cipher, account.id), 'refresh-token-two');
+    assert.equal(await flow.service.mailboxAccess(account.id), 'access-token-value');
+    assert.equal(tokenCalls(), before + 3);
+    flow.mode.grantedScope = 'openid email profile';
+    flow.mode.refreshToken = 'refresh-token-three';
+    flow.arm();
+    const narrowed = codeOf(flow.service.reconnect(account.id));
+    await flow.callback();
+    assert.equal(await narrowed, 'scope-denied');
+    assert.equal(savedToken(flow.database, flow.cipher, account.id), 'refresh-token-two');
+    assert.equal(flow.service.listAccounts()[0]?.canModifyMail, true);
+    flow.arm();
+    const cancelled = codeOf(flow.service.reconnect(account.id));
+    await flow.untilOpened();
+    assert.deepEqual(flow.service.cancel(), { cancelled: true });
+    assert.equal(await cancelled, 'oauth-cancelled');
+    assert.equal(savedToken(flow.database, flow.cipher, account.id), 'refresh-token-two');
   });
 });

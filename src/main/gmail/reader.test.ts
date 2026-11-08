@@ -78,7 +78,8 @@ function seed(
   database: DatabaseSync,
   secret: SecretCipher,
   subject: string,
-  refresh: string
+  refresh: string,
+  grantedScopes?: string
 ): string {
   const existing = database
     .prepare("SELECT id FROM oauth_clients WHERE provider = 'google'")
@@ -93,7 +94,8 @@ function seed(
     displayName: subject,
     email: `${subject}@example.com`,
     status: 'connected',
-    oauthClientId: client.id
+    oauthClientId: client.id,
+    ...(grantedScopes === undefined ? {} : { grantedScopes })
   });
   saveAccountRefreshToken(database, secret, account.id, refresh);
   return account.id;
@@ -778,5 +780,276 @@ describe('gmail reader', () => {
     );
     assert.equal(await failure(new PersistenceError('constraint')), 'internal');
     assert.equal(await failure(new Error('boom')), 'internal');
+  });
+
+  it('writes only the approved thread and message changes', async () => {
+    const database = openTemp();
+    const secret = cipher();
+    const modify = 'openid email profile https://www.googleapis.com/auth/gmail.modify';
+    const ada = seed(database, secret, 'ada', 'refresh-a', modify);
+    const grace = seed(database, secret, 'grace', 'refresh-b');
+    const calls: { href: string; method: string; body: string; auth: string }[] = [];
+    const fetchImpl: typeof fetch = async (url, init) => {
+      const href = requestUrl(url);
+      if (href.includes('/token')) {
+        const refresh = formField(init, 'refresh_token');
+        return Response.json({
+          access_token: refresh === 'refresh-a' ? 'access-a' : 'access-b',
+          expires_in: 3600
+        });
+      }
+      calls.push({
+        href,
+        method: init?.method ?? 'GET',
+        body: typeof init?.body === 'string' ? init.body : '',
+        auth: authorization(init)
+      });
+      if (href.endsWith('/labels')) return Response.json(labelsBody);
+      if (href.includes('/messages/messageone/modify')) {
+        return Response.json({ id: 'messageone', historyId: 'secret-history' });
+      }
+      if (href.includes('/threads/threadsame/')) {
+        return Response.json({ id: 'threadsame', historyId: 'secret-history' });
+      }
+      return Response.json({ id: 'other' });
+    };
+    const accounts = createGoogleAccountService({
+      database,
+      cipher: secret,
+      fetchImpl,
+      openExternal: async () => undefined
+    });
+    const reader = createGmailReader({ accounts, fetchImpl, openExternal: async () => undefined });
+    const read = await reader.markRead(ada, 'threadsame');
+    assert.deepEqual(read, { threadId: 'threadsame', unread: false });
+    assert.equal(JSON.stringify(read).includes('secret-history'), false);
+    assert.deepEqual(calls.at(-1), {
+      href: 'https://gmail.googleapis.com/gmail/v1/users/me/threads/threadsame/modify',
+      method: 'POST',
+      body: '{"removeLabelIds":["UNREAD"]}',
+      auth: 'Bearer access-a'
+    });
+    await reader.markUnread(ada, 'threadsame');
+    assert.equal(calls.at(-1)?.body, '{"addLabelIds":["UNREAD"]}');
+    await reader.archiveThread(ada, 'threadsame');
+    assert.equal(calls.at(-1)?.body, '{"removeLabelIds":["INBOX"]}');
+    await reader.trashThread(ada, 'threadsame');
+    assert.equal(
+      calls.at(-1)?.href,
+      'https://gmail.googleapis.com/gmail/v1/users/me/threads/threadsame/trash'
+    );
+    assert.equal(calls.at(-1)?.body, '');
+    await reader.untrashThread(ada, 'threadsame');
+    assert.equal(calls.at(-1)?.href.endsWith('/threads/threadsame/untrash'), true);
+    const labeled = await reader.addLabel(ada, 'threadsame', 'Label_1');
+    assert.deepEqual(labeled, { threadId: 'threadsame', labelId: 'Label_1' });
+    assert.equal(calls.at(-1)?.body, '{"addLabelIds":["Label_1"]}');
+    await reader.removeLabel(ada, 'threadsame', 'Label_1');
+    assert.equal(calls.at(-1)?.body, '{"removeLabelIds":["Label_1"]}');
+    const starred = await reader.starMessage(ada, 'threadsame', 'messageone');
+    assert.deepEqual(starred, { threadId: 'threadsame', messageId: 'messageone', starred: true });
+    assert.equal(
+      calls.at(-1)?.href,
+      'https://gmail.googleapis.com/gmail/v1/users/me/messages/messageone/modify'
+    );
+    assert.equal(calls.at(-1)?.body, '{"addLabelIds":["STARRED"]}');
+    await reader.unstarMessage(ada, 'threadsame', 'messageone');
+    assert.equal(calls.at(-1)?.body, '{"removeLabelIds":["STARRED"]}');
+    const beforeReadonly = calls.length;
+    assert.equal(
+      await reader.markRead(grace, 'threadsame').then(
+        () => 'ok',
+        (error: unknown) => code(error)
+      ),
+      'insufficient-scope'
+    );
+    assert.equal(calls.length, beforeReadonly);
+    assert.equal(getConnectedAccount(database, grace).status, 'connected');
+    const beforeSystem = calls.length;
+    assert.equal(
+      await reader.addLabel(ada, 'threadsame', 'INBOX').then(
+        () => 'ok',
+        (error: unknown) => code(error)
+      ),
+      'invalid-request'
+    );
+    assert.equal(calls.length, beforeSystem + 1);
+    assert.equal(calls.at(-1)?.href.endsWith('/labels'), true);
+    assert.equal(
+      await reader.markRead(ada, 'bad/id').then(
+        () => 'ok',
+        (error: unknown) => code(error)
+      ),
+      'invalid-request'
+    );
+    assert.equal(
+      await reader.starMessage(ada, 'threadsame', 'bad/id').then(
+        () => 'ok',
+        (error: unknown) => code(error)
+      ),
+      'invalid-request'
+    );
+  });
+
+  it('rejects a second change to the same thread and a response for another resource', async () => {
+    const database = openTemp();
+    const secret = cipher();
+    const ada = seed(
+      database,
+      secret,
+      'ada',
+      'refresh-a',
+      'openid email profile https://www.googleapis.com/auth/gmail.modify'
+    );
+    let release: (() => void) | undefined;
+    const fetchImpl: typeof fetch = async (url) => {
+      const href = requestUrl(url);
+      if (href.includes('/token')) {
+        return Response.json({ access_token: 'access-a', expires_in: 3600 });
+      }
+      if (href.endsWith('/modify')) {
+        return new Promise((resolve) => {
+          release = () => resolve(Response.json({ id: 'wrong' }));
+        });
+      }
+      return Response.json(labelsBody);
+    };
+    const reader = createGmailReader({
+      accounts: createGoogleAccountService({
+        database,
+        cipher: secret,
+        fetchImpl,
+        openExternal: async () => undefined
+      }),
+      fetchImpl,
+      openExternal: async () => undefined
+    });
+    const first = reader.archiveThread(ada, 'threadsame');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(
+      await reader.trashThread(ada, 'threadsame').then(
+        () => 'ok',
+        (error: unknown) => code(error)
+      ),
+      'operation-in-progress'
+    );
+    release?.();
+    assert.equal(
+      await first.then(
+        () => 'ok',
+        (error: unknown) => code(error)
+      ),
+      'invalid-response'
+    );
+  });
+
+  it('keeps a read-only grant when Gmail refuses the scope and does not treat that as invalid_grant', async () => {
+    const database = openTemp();
+    const secret = cipher();
+    const ada = seed(
+      database,
+      secret,
+      'ada',
+      'refresh-a',
+      'openid email profile https://www.googleapis.com/auth/gmail.modify'
+    );
+    const fetchImpl: typeof fetch = async (url) => {
+      const href = requestUrl(url);
+      if (href.includes('/token')) {
+        return Response.json({ access_token: 'access-a', expires_in: 3600 });
+      }
+      return Response.json(
+        { error: { errors: [{ reason: 'insufficientPermissions' }] } },
+        { status: 403 }
+      );
+    };
+    const reader = createGmailReader({
+      accounts: createGoogleAccountService({
+        database,
+        cipher: secret,
+        fetchImpl,
+        openExternal: async () => undefined
+      }),
+      fetchImpl,
+      openExternal: async () => undefined
+    });
+    assert.equal(
+      await reader.archiveThread(ada, 'threadsame').then(
+        () => 'ok',
+        (error: unknown) => code(error)
+      ),
+      'insufficient-scope'
+    );
+    assert.equal(getConnectedAccount(database, ada).status, 'connected');
+    assert.equal(readAccountRefreshToken(database, secret, ada), 'refresh-a');
+    const revoked = openTemp();
+    const revokedSecret = cipher();
+    const id = seed(
+      revoked,
+      revokedSecret,
+      'ada',
+      'refresh-a',
+      'openid email profile https://www.googleapis.com/auth/gmail.modify'
+    );
+    const revokedFetch: typeof fetch = async (url) => {
+      if (requestUrl(url).includes('/token')) {
+        return Response.json({ error: 'invalid_grant' }, { status: 400 });
+      }
+      return Response.json({});
+    };
+    const revokedReader = createGmailReader({
+      accounts: createGoogleAccountService({
+        database: revoked,
+        cipher: revokedSecret,
+        fetchImpl: revokedFetch,
+        openExternal: async () => undefined
+      }),
+      fetchImpl: revokedFetch,
+      openExternal: async () => undefined
+    });
+    assert.equal(
+      await revokedReader.archiveThread(id, 'threadsame').then(
+        () => 'ok',
+        (error: unknown) => code(error)
+      ),
+      'needs-reauth'
+    );
+    assert.equal(getConnectedAccount(revoked, id).status, 'needs_reauth');
+  });
+
+  it('reports a network failure without changing the saved account', async () => {
+    const database = openTemp();
+    const secret = cipher();
+    const ada = seed(
+      database,
+      secret,
+      'ada',
+      'refresh-a',
+      'openid email profile https://www.googleapis.com/auth/gmail.modify'
+    );
+    const fetchImpl: typeof fetch = async (url) => {
+      if (requestUrl(url).includes('/token')) {
+        return Response.json({ access_token: 'access-a', expires_in: 3600 });
+      }
+      throw new Error('offline');
+    };
+    const reader = createGmailReader({
+      accounts: createGoogleAccountService({
+        database,
+        cipher: secret,
+        fetchImpl,
+        openExternal: async () => undefined
+      }),
+      fetchImpl,
+      openExternal: async () => undefined
+    });
+    assert.equal(
+      await reader.trashThread(ada, 'threadsame').then(
+        () => 'ok',
+        (error: unknown) => code(error)
+      ),
+      'network'
+    );
+    assert.equal(getConnectedAccount(database, ada).status, 'connected');
   });
 });

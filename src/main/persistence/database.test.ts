@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
+import { historicalReadonlyGrant } from '../../shared/google-accounts.ts';
 import {
   assertForeignKeys,
   openAuroraDatabase,
@@ -65,12 +66,12 @@ describe('openAuroraDatabase', () => {
     const empty = new DatabaseSync(file);
     empty.close();
     const database = openAuroraDatabase(file);
-    assert.equal(readSchemaVersion(database), 1);
+    assert.equal(readSchemaVersion(database), schemaVersion);
     database.close();
     const again = openAuroraDatabase(file);
     const versions = again.prepare('SELECT version FROM schema_migrations').all();
     assert.equal(versions.length, 1);
-    assert.equal(versions[0]?.version, 1);
+    assert.equal(versions[0]?.version, schemaVersion);
     again.close();
   });
 
@@ -79,7 +80,7 @@ describe('openAuroraDatabase', () => {
     const database = openAuroraDatabase(file);
     database
       .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
-      .run(2, '2026-10-17T00:00:00.000Z');
+      .run(schemaVersion + 1, '2026-10-17T00:00:00.000Z');
     database.close();
     const before = {
       database: readFileSync(file),
@@ -135,7 +136,70 @@ describe('openAuroraDatabase', () => {
     probe.close();
     assert.deepEqual(names, []);
     const database = openAuroraDatabase(file);
-    assert.equal(readSchemaVersion(database), 1);
+    assert.equal(readSchemaVersion(database), schemaVersion);
+    database.close();
+  });
+
+  it('keeps an existing version 1 account read-only', () => {
+    const file = join(tempDir(), 'aurora.sqlite');
+    const legacy = new DatabaseSync(file);
+    legacy.exec(`
+      CREATE TABLE schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE oauth_clients (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (provider, client_id)
+      ) STRICT;
+      CREATE TABLE connected_accounts (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        provider_account_id TEXT NOT NULL,
+        display_name TEXT,
+        email TEXT,
+        status TEXT NOT NULL,
+        oauth_client_id TEXT NOT NULL REFERENCES oauth_clients (id) ON DELETE RESTRICT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (provider, provider_account_id)
+      ) STRICT;
+    `);
+    legacy
+      .prepare(
+        `INSERT INTO schema_migrations (version, applied_at) VALUES (1, '2026-10-17T00:00:00.000Z')`
+      )
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO oauth_clients (id, provider, client_id, created_at, updated_at)
+         VALUES ('00000000-0000-4000-8000-000000000010', 'google', 'client.apps.googleusercontent.com',
+                 '2026-10-17T00:00:00.000Z', '2026-10-17T00:00:00.000Z')`
+      )
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO connected_accounts (
+           id, provider, provider_account_id, display_name, email, status, oauth_client_id,
+           created_at, updated_at
+         ) VALUES (
+           '00000000-0000-4000-8000-000000000011', 'google', 'google-user', 'Ada',
+           'ada@example.com', 'connected', '00000000-0000-4000-8000-000000000010',
+           '2026-10-17T00:00:00.000Z', '2026-10-17T00:00:00.000Z'
+         )`
+      )
+      .run();
+    legacy.close();
+    const database = openAuroraDatabase(file);
+    const row = database.prepare('SELECT granted_scopes FROM connected_accounts').get() as {
+      granted_scopes: string;
+    };
+    assert.equal(row.granted_scopes, historicalReadonlyGrant);
+    assert.equal(readSchemaVersion(database), schemaVersion);
     database.close();
   });
 

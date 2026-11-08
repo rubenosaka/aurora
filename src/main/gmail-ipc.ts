@@ -4,15 +4,28 @@ import { type GmailReader } from './gmail/reader.ts';
 import { isAuthorizedSender, type SenderSnapshot } from './trusted-sender.ts';
 import { isGoogleAccountId } from '../shared/google-accounts.ts';
 import {
+  gmailAddLabelChannel,
+  gmailArchiveThreadChannel,
   gmailChannels,
   gmailLabelsChannel,
+  gmailMarkReadChannel,
+  gmailMarkUnreadChannel,
   gmailOpenLinkChannel,
+  gmailRemoveLabelChannel,
+  gmailStarMessageChannel,
   gmailThreadChannel,
   gmailThreadsChannel,
+  gmailTrashThreadChannel,
+  gmailUnstarMessageChannel,
+  gmailUntrashThreadChannel,
   isGmailId,
+  parseGmailLabelChanged,
   parseGmailLabelList,
   parseGmailOpenedLink,
+  parseGmailReadState,
+  parseGmailStarChanged,
   parseGmailThread,
+  parseGmailThreadChanged,
   parseGmailThreadList,
   parseGmailThreadQuery,
   type GmailErrorCode,
@@ -23,7 +36,11 @@ type GmailIpcValue =
   | Awaited<ReturnType<GmailReader['listLabels']>>
   | Awaited<ReturnType<GmailReader['listThreads']>>
   | Awaited<ReturnType<GmailReader['readThread']>>
-  | Awaited<ReturnType<GmailReader['openLink']>>;
+  | Awaited<ReturnType<GmailReader['openLink']>>
+  | Awaited<ReturnType<GmailReader['markRead']>>
+  | Awaited<ReturnType<GmailReader['archiveThread']>>
+  | Awaited<ReturnType<GmailReader['addLabel']>>
+  | Awaited<ReturnType<GmailReader['starMessage']>>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -56,9 +73,66 @@ function threadArgument(args: readonly unknown[]): { accountId: string; threadId
   return { accountId: args[0].accountId, threadId: args[0].threadId };
 }
 
+function labelArgument(
+  args: readonly unknown[]
+): { accountId: string; threadId: string; labelId: string } | null {
+  if (
+    args.length !== 1 ||
+    !isRecord(args[0]) ||
+    !hasExactKeys(args[0], ['accountId', 'threadId', 'labelId'])
+  ) {
+    return null;
+  }
+  if (
+    !isGoogleAccountId(args[0].accountId) ||
+    !isGmailId(args[0].threadId) ||
+    !isGmailId(args[0].labelId)
+  ) {
+    return null;
+  }
+  return { accountId: args[0].accountId, threadId: args[0].threadId, labelId: args[0].labelId };
+}
+
+function messageArgument(
+  args: readonly unknown[]
+): { accountId: string; threadId: string; messageId: string } | null {
+  if (
+    args.length !== 1 ||
+    !isRecord(args[0]) ||
+    !hasExactKeys(args[0], ['accountId', 'threadId', 'messageId'])
+  ) {
+    return null;
+  }
+  if (
+    !isGoogleAccountId(args[0].accountId) ||
+    !isGmailId(args[0].threadId) ||
+    !isGmailId(args[0].messageId)
+  ) {
+    return null;
+  }
+  return {
+    accountId: args[0].accountId,
+    threadId: args[0].threadId,
+    messageId: args[0].messageId
+  };
+}
+
 function linkArgument(args: readonly unknown[]): string | null {
   if (args.length !== 1 || !isRecord(args[0]) || !hasExactKeys(args[0], ['url'])) return null;
   return typeof args[0].url === 'string' ? args[0].url : null;
+}
+
+async function threadAction(
+  channel: string,
+  reader: GmailReader,
+  accountId: string,
+  threadId: string
+): Promise<GmailIpcValue> {
+  if (channel === gmailMarkReadChannel) return reader.markRead(accountId, threadId);
+  if (channel === gmailMarkUnreadChannel) return reader.markUnread(accountId, threadId);
+  if (channel === gmailArchiveThreadChannel) return reader.archiveThread(accountId, threadId);
+  if (channel === gmailTrashThreadChannel) return reader.trashThread(accountId, threadId);
+  return reader.untrashThread(accountId, threadId);
 }
 
 function codeOf(error: unknown): GmailErrorCode {
@@ -95,6 +169,43 @@ export async function handleGmailChannel(
       if (input === null) return rejected('invalid-request');
       const value = await reader.readThread(input.accountId, input.threadId);
       if (parseGmailThread(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (
+      channel === gmailMarkReadChannel ||
+      channel === gmailMarkUnreadChannel ||
+      channel === gmailArchiveThreadChannel ||
+      channel === gmailTrashThreadChannel ||
+      channel === gmailUntrashThreadChannel
+    ) {
+      const input = threadArgument(args);
+      if (input === null) return rejected('invalid-request');
+      const value = await threadAction(channel, reader, input.accountId, input.threadId);
+      const parsed =
+        channel === gmailMarkReadChannel || channel === gmailMarkUnreadChannel
+          ? parseGmailReadState(value)
+          : parseGmailThreadChanged(value);
+      if (parsed === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailAddLabelChannel || channel === gmailRemoveLabelChannel) {
+      const input = labelArgument(args);
+      if (input === null) return rejected('invalid-request');
+      const value =
+        channel === gmailAddLabelChannel
+          ? await reader.addLabel(input.accountId, input.threadId, input.labelId)
+          : await reader.removeLabel(input.accountId, input.threadId, input.labelId);
+      if (parseGmailLabelChanged(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailStarMessageChannel || channel === gmailUnstarMessageChannel) {
+      const input = messageArgument(args);
+      if (input === null) return rejected('invalid-request');
+      const value =
+        channel === gmailStarMessageChannel
+          ? await reader.starMessage(input.accountId, input.threadId, input.messageId)
+          : await reader.unstarMessage(input.accountId, input.threadId, input.messageId);
+      if (parseGmailStarChanged(value) === null) return rejected('invalid-response');
       return { ok: true, value };
     }
     if (channel === gmailOpenLinkChannel) {

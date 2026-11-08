@@ -26,15 +26,27 @@ describe('visual system', () => {
     assert.equal(mail.includes('.mail-row:focus-visible'), true);
   });
 
-  it('switches folders from a scrolling row to a column at the main width', () => {
+  it('keeps mail folders in a sidebar and scrolls only the message list', () => {
     assert.equal(tokens.includes('container-name: shell;'), true);
-    assert.equal(mail.includes('flex-wrap: nowrap;'), true);
-    assert.equal(mail.includes('height: 40px;'), true);
-    assert.equal(mail.includes('height: 56px;'), true);
-    assert.equal(mail.includes('@container shell (min-width: 960px)'), true);
-    assert.equal(mail.includes('grid-template-columns: 200px minmax(0, 1fr);'), true);
-    assert.equal(mail.includes('.mail-screen.is-reading'), false);
-    assert.equal(mail.includes('.mail-screen:not(.is-reading)'), true);
+    assert.equal(mail.includes('grid-template-columns: 188px minmax(0, 1fr);'), true);
+    const folders = mail.slice(mail.indexOf('.mail-folders {'), mail.indexOf('.folder-button {'));
+    assert.equal(folders.includes('overflow-x'), false);
+    assert.equal(folders.includes('overflow-y'), false);
+    assert.equal(folders.includes('auto'), false);
+    assert.equal(mail.includes('.mail-list'), true);
+    assert.equal(mail.includes('overflow-y: auto;'), true);
+    assert.equal(mail.includes('min-height: 64px;'), true);
+    assert.equal(mail.includes('grid-template-columns: minmax(0, 1fr) 112px;'), true);
+    assert.equal(mail.includes('.mail-folder-bar .mail-folder-toggle {\n  display: none;'), true);
+    const collapsed = mail.slice(mail.indexOf('@container mail-screen (max-width: 560px)'));
+    assert.equal(
+      collapsed.includes('.mail-folder-bar .mail-folder-toggle {\n    display: inline-flex;'),
+      true
+    );
+    assert.equal(mail.includes('@container mail-screen (max-width: 560px)'), true);
+    assert.equal(mail.includes('grid-template-columns: 48px minmax(0, 1fr);'), true);
+    assert.equal(mail.includes('.mail-line-primary'), true);
+    assert.equal(mail.includes('.mail-line-secondary'), true);
   });
 
   it('scopes reading styles without taking layout away from tables', () => {

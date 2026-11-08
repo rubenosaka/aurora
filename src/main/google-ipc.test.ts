@@ -19,7 +19,8 @@ const account = {
   id: '00000000-0000-4000-8000-000000000001',
   email: 'ada@example.com',
   displayName: 'Ada',
-  status: 'connected' as const
+  status: 'connected' as const,
+  canModifyMail: true
 };
 
 function sender(overrides: Partial<SenderSnapshot> = {}): SenderSnapshot {
@@ -49,6 +50,7 @@ function service(overrides: Partial<GoogleAccountService> = {}): GoogleAccountSe
     beginMailboxRead: () => undefined,
     endMailboxRead: () => undefined,
     mailboxAccess: async () => 'access-token-value',
+    modificationGrant: () => 'ready',
     forgetMailboxAccess: () => undefined,
     shutdown: () => undefined,
     ...overrides

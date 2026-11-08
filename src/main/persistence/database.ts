@@ -2,9 +2,10 @@ import { copyFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { historicalReadonlyGrant } from '../../shared/google-accounts.ts';
 import { PersistenceError, rethrowPersistence } from './errors.ts';
 
-export const schemaVersion = 1;
+export const schemaVersion = 2;
 
 const openOptions = {
   enableForeignKeyConstraints: true,
@@ -40,6 +41,7 @@ CREATE TABLE connected_accounts (
   email TEXT,
   status TEXT NOT NULL,
   oauth_client_id TEXT NOT NULL REFERENCES oauth_clients (id) ON DELETE RESTRICT,
+  granted_scopes TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE (provider, provider_account_id),
@@ -121,21 +123,22 @@ function configureConnection(database: DatabaseSync): void {
   assertForeignKeys(database);
 }
 
-function migrate(database: DatabaseSync, now: () => Date): void {
-  const version = readSchemaVersion(database);
-  if (version === schemaVersion) return;
-  if (version !== 0) throw new PersistenceError('unsupported-schema');
+function applyMigration(
+  database: DatabaseSync,
+  version: number,
+  sql: string,
+  now: () => Date
+): void {
   try {
     database.exec('BEGIN IMMEDIATE');
   } catch (error) {
     rethrowPersistence(error, 'migration-failed');
   }
   try {
-    database.exec(migrationSql);
-    const appliedAt = now().toISOString();
+    database.exec(sql);
     database
       .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
-      .run(schemaVersion, appliedAt);
+      .run(version, now().toISOString());
     database.exec('COMMIT');
   } catch (error) {
     try {
@@ -145,6 +148,25 @@ function migrate(database: DatabaseSync, now: () => Date): void {
     }
     rethrowPersistence(error, 'migration-failed');
   }
+}
+
+function migrate(database: DatabaseSync, now: () => Date): void {
+  const version = readSchemaVersion(database);
+  if (version === schemaVersion) return;
+  if (version === 0) {
+    applyMigration(database, schemaVersion, migrationSql, now);
+    return;
+  }
+  if (version === 1) {
+    applyMigration(
+      database,
+      schemaVersion,
+      `ALTER TABLE connected_accounts ADD COLUMN granted_scopes TEXT NOT NULL DEFAULT '${historicalReadonlyGrant}'`,
+      now
+    );
+    return;
+  }
+  throw new PersistenceError('unsupported-schema');
 }
 
 function openWritable(filePath: string, now: () => Date): DatabaseSync {

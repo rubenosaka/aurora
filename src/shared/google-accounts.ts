@@ -18,6 +18,31 @@ export const googleChannels = [
 
 export type GoogleChannel = (typeof googleChannels)[number];
 
+export const gmailModifyScope = 'https://www.googleapis.com/auth/gmail.modify';
+
+export const historicalReadonlyGrant =
+  'openid email profile https://www.googleapis.com/auth/gmail.readonly';
+
+export const requiredMailScopes = ['openid', 'email', 'profile', gmailModifyScope] as const;
+
+const scopeTokenPattern = /^[A-Za-z0-9_.:/-]{1,200}$/;
+
+export function parseGrantedScopes(value: unknown): string[] | null {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 2048) return null;
+  if (/^\s|\s$|\s{2}/.test(value)) return null;
+  const parts = value.split(' ');
+  if (parts.length > 32 || !parts.every((part) => scopeTokenPattern.test(part))) return null;
+  return [...new Set(parts)];
+}
+
+export function formatGrantedScopes(scopes: readonly string[]): string {
+  return [...new Set(scopes)].sort().join(' ');
+}
+
+export function grantAllowsMailChanges(scopes: readonly string[]): boolean {
+  return requiredMailScopes.every((scope) => scopes.includes(scope));
+}
+
 export const googleAccountStatuses = ['connected', 'needs_reauth'] as const;
 
 export type GoogleAccountStatus = (typeof googleAccountStatuses)[number];
@@ -41,6 +66,7 @@ export interface GoogleAccountSummary {
   email: string | null;
   displayName: string | null;
   status: GoogleAccountStatus;
+  canModifyMail: boolean;
 }
 
 export interface GoogleAccountList {
@@ -71,6 +97,7 @@ export const googleErrorCodes = [
   'encryption-unavailable',
   'needs-reauth',
   'operation-in-progress',
+  'scope-denied',
   'internal'
 ] as const;
 
@@ -95,6 +122,7 @@ const messages: Record<GoogleErrorCode, string> = {
   'encryption-unavailable': 'Credential protection is unavailable.',
   'needs-reauth': 'The saved Google credential can no longer be used.',
   'operation-in-progress': 'Another Google account change is already in progress.',
+  'scope-denied': 'Google did not grant permission to change mail. The saved account was kept.',
   internal: 'Request failed.'
 };
 
@@ -172,7 +200,8 @@ function isOptionalText(value: unknown, maxLength: number): value is string | nu
 export function isGoogleAccountSummary(value: unknown): value is GoogleAccountSummary {
   if (
     !isRecord(value) ||
-    !hasExactKeys(value, ['id', 'email', 'displayName', 'status']) ||
+    !hasExactKeys(value, ['id', 'email', 'displayName', 'status', 'canModifyMail']) ||
+    typeof value.canModifyMail !== 'boolean' ||
     !isGoogleAccountId(value.id) ||
     !isOptionalText(value.email, 320) ||
     !isOptionalText(value.displayName, 256)

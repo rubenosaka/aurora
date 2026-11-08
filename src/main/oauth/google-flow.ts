@@ -1,3 +1,8 @@
+import {
+  formatGrantedScopes,
+  grantAllowsMailChanges,
+  parseGrantedScopes
+} from '../../shared/google-accounts.ts';
 import { OAuthFlowError } from './errors.ts';
 import { pkceChallengeS256 } from './pkce.ts';
 
@@ -9,7 +14,7 @@ export const googleScopes = [
   'openid',
   'email',
   'profile',
-  'https://www.googleapis.com/auth/gmail.readonly'
+  'https://www.googleapis.com/auth/gmail.modify'
 ] as const;
 
 const requestTimeoutMs = 10_000;
@@ -17,12 +22,14 @@ const requestTimeoutMs = 10_000;
 export interface AuthorizationCodeTokens {
   idToken: string;
   refreshToken: string | null;
+  grantedScopes: string;
 }
 
 export interface RefreshedTokens {
   accessToken: string;
   expiresIn: number | null;
   refreshToken: string | null;
+  grantedScopes: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -118,6 +125,20 @@ function withClientSecret(
   return body;
 }
 
+function requiredGrant(value: unknown): string {
+  const scopes = parseGrantedScopes(value);
+  if (scopes === null) throw new OAuthFlowError('provider-rejected');
+  if (!grantAllowsMailChanges(scopes)) throw new OAuthFlowError('scope-denied');
+  return formatGrantedScopes(scopes);
+}
+
+function optionalGrant(value: unknown): string | null {
+  if (value === undefined) return null;
+  const scopes = parseGrantedScopes(value);
+  if (scopes === null) throw new OAuthFlowError('provider-rejected');
+  return formatGrantedScopes(scopes);
+}
+
 function readError(payload: Record<string, unknown>): void {
   if (payload.error === undefined) return;
   if (payload.error === 'invalid_grant') throw new OAuthFlowError('needs-reauth');
@@ -195,7 +216,8 @@ export async function exchangeAuthorizationCode(input: {
   try {
     return {
       idToken: payload.id_token,
-      refreshToken: optionalRefreshToken(payload.refresh_token)
+      refreshToken: optionalRefreshToken(payload.refresh_token),
+      grantedScopes: requiredGrant(payload.scope)
     };
   } catch (error) {
     recordTokenExchangeFailure(response.status, undefined);
@@ -233,7 +255,8 @@ export async function refreshAccessToken(input: {
   return {
     accessToken: requireAccessToken(payload.access_token),
     expiresIn: optionalExpiresIn(payload.expires_in),
-    refreshToken: optionalRefreshToken(payload.refresh_token)
+    refreshToken: optionalRefreshToken(payload.refresh_token),
+    grantedScopes: optionalGrant(payload.scope)
   };
 }
 

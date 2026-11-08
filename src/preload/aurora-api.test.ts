@@ -33,7 +33,16 @@ describe('createAuroraApi', () => {
       'listLabels',
       'listThreads',
       'readThread',
-      'openLink'
+      'openLink',
+      'markRead',
+      'markUnread',
+      'archiveThread',
+      'trashThread',
+      'untrashThread',
+      'addLabel',
+      'removeLabel',
+      'starMessage',
+      'unstarMessage'
     ]);
     assert.equal(Object.isFrozen(api), true);
     assert.equal(Object.isFrozen(api.app), true);
@@ -85,7 +94,8 @@ describe('createAuroraApi', () => {
       id: '00000000-0000-4000-8000-000000000001',
       email: null,
       displayName: null,
-      status: 'needs_reauth' as const
+      status: 'needs_reauth' as const,
+      canModifyMail: false
     };
     const responses = new Map<string, unknown>([
       [
