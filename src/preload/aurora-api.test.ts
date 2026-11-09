@@ -72,7 +72,13 @@ describe('createAuroraApi', () => {
       'bulkLabel',
       'createLabel',
       'renameLabel',
-      'deleteLabel'
+      'deleteLabel',
+      'syncStatus',
+      'setNotifications',
+      'reportSyncView',
+      'syncFocus',
+      'listenSync',
+      'listenOpen'
     ]);
     assert.equal(Object.isFrozen(api), true);
     assert.equal(Object.isFrozen(api.app), true);

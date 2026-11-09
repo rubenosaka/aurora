@@ -27,11 +27,14 @@ import { onBeforeRouteLeave, useRouter, RouterLink } from 'vue-router';
 import {
   GmailIpcError,
   gmailErrorMessage,
+  isGmailId,
   type GmailApi,
   type GmailBulkResult,
   type GmailErrorCode,
   type GmailLabel,
   type GmailMessage,
+  type GmailSyncChanged,
+  type GmailSyncStatus,
   type GmailThreadSummary
 } from '../../../../shared/gmail.ts';
 import {
@@ -48,6 +51,7 @@ import {
 import { type DraftAttachmentRef } from '../../../../shared/mail-draft.ts';
 import { createRendererAppApi } from '../../aurora-client.ts';
 import StatusPanel from '../../components/StatusPanel.vue';
+import { pendingMailOpen } from './mail-open.ts';
 import './mail.css';
 
 const folderIcons: Record<string, Component> = {
@@ -107,6 +111,11 @@ const pageIndex = ref(0);
 const nextPageToken = ref<string | null>(null);
 const messages = ref<GmailMessage[]>([]);
 const openId = ref<string | null>(null);
+const syncState = ref<GmailSyncStatus | null>(null);
+const syncNow = ref(Date.now());
+let stopSyncListen = (): void => undefined;
+let syncClock = 0;
+let queuedOpen: { accountId: string; threadId: string } | null = null;
 const status = ref<'loading' | 'ready' | 'error'>('loading');
 const detail = ref('');
 const errorCode = ref<GmailErrorCode | null>(null);
@@ -1750,6 +1759,165 @@ function onHtmlClick(event: MouseEvent): void {
     });
 }
 
+function syncBusy(): boolean {
+  return syncState.value?.state === 'bootstrapping' || syncState.value?.state === 'syncing';
+}
+
+function relativeTime(iso: string, current: number): string {
+  const delta = current - Date.parse(iso);
+  if (!Number.isFinite(delta) || delta < 60_000) return 'just now';
+  const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  const minutes = Math.round(delta / 60_000);
+  if (minutes < 60) return formatter.format(-minutes, 'minute');
+  const hours = Math.round(delta / 3_600_000);
+  if (hours < 24) return formatter.format(-hours, 'hour');
+  return formatter.format(-Math.round(delta / 86_400_000), 'day');
+}
+
+const syncLine = computed(() => {
+  const current = syncState.value;
+  if (current === null) return '';
+  if (current.notificationsBlocked) return 'Windows is not showing Aurora notifications.';
+  if (current.state === 'bootstrapping' || current.state === 'syncing')
+    return 'Checking for new mail';
+  if (current.state === 'offline') return 'Aurora could not reach Google.';
+  if (current.state === 'needs-reauth' || current.lastSuccessAt === null) return '';
+  return `Updated ${relativeTime(current.lastSuccessAt, syncNow.value)}`;
+});
+
+const notificationsOn = computed(() => syncState.value?.notifications !== 'off');
+const contentShown = computed(() => syncState.value?.content !== 'hide');
+
+async function loadSyncStatus(): Promise<void> {
+  if (accountId.value === '') return;
+  try {
+    syncState.value = await gmail().syncStatus(accountId.value);
+  } catch {
+    syncState.value = null;
+  }
+}
+
+function publishView(): void {
+  const view =
+    accountId.value === ''
+      ? { accountId: null, labelId: null, query: null, threadId: null }
+      : {
+          accountId: accountId.value,
+          labelId: activeQuery.value === null ? labelId.value : null,
+          query: activeQuery.value,
+          threadId: openId.value
+        };
+  void gmail()
+    .reportSyncView(view)
+    .catch(() => undefined);
+}
+
+async function applySync(event: GmailSyncChanged): Promise<void> {
+  if (event.accountId !== accountId.value) return;
+  await loadSyncStatus();
+  if (event.refresh === 'none') return;
+  const gen = generation;
+  try {
+    if (event.refresh === 'labels' || event.refresh === 'page' || event.refresh === 'thread') {
+      const listed = await gmail().listLabels(accountId.value);
+      if (gen !== generation || event.accountId !== accountId.value) return;
+      labels.value = listed.labels;
+    }
+    if (event.refresh === 'page') {
+      const page = await gmail().listThreads({
+        accountId: accountId.value,
+        labelId: activeQuery.value === null ? labelId.value : null,
+        query: activeQuery.value,
+        pageToken: pageTokens.value[pageIndex.value] ?? null
+      });
+      if (gen !== generation || event.accountId !== accountId.value) return;
+      threads.value = page.threads;
+      nextPageToken.value = page.nextPageToken;
+      if (openId.value !== null && (event.threadId === null || event.threadId === openId.value)) {
+        const thread = await gmail().readThread(accountId.value, openId.value);
+        if (gen !== generation || openId.value === null) return;
+        messages.value = thread.messages;
+      }
+    }
+    if (event.refresh === 'thread' && event.threadId !== null && openId.value === event.threadId) {
+      const thread = await gmail().readThread(accountId.value, event.threadId);
+      if (gen !== generation || openId.value !== event.threadId) return;
+      messages.value = thread.messages;
+    }
+  } catch {
+    return;
+  }
+}
+
+function onWindowFocus(): void {
+  if (accountId.value === '') return;
+  void gmail()
+    .syncFocus(accountId.value)
+    .then((next) => {
+      if (accountId.value !== '') syncState.value = next;
+    })
+    .catch(() => undefined);
+}
+
+async function saveNotificationPreference(
+  notifications: 'on' | 'off',
+  content: 'show' | 'hide'
+): Promise<void> {
+  if (accountId.value === '') return;
+  try {
+    syncState.value = await gmail().setNotifications({
+      accountId: accountId.value,
+      notifications,
+      content
+    });
+  } catch (error) {
+    if (error instanceof GmailIpcError) actionNotice.value = error.message;
+  }
+}
+
+function toggleNotifications(event: Event): void {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement) || syncState.value === null) return;
+  void saveNotificationPreference(input.checked ? 'on' : 'off', syncState.value.content);
+}
+
+function toggleContent(event: Event): void {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement) || syncState.value === null) return;
+  void saveNotificationPreference(syncState.value.notifications, input.checked ? 'show' : 'hide');
+}
+
+async function openNotified(target: { accountId: string; threadId: string }): Promise<void> {
+  if (!isGmailId(target.threadId)) return;
+  if (!accounts.value.some((item) => item.id === target.accountId && item.status === 'connected')) {
+    return;
+  }
+  if (accountId.value !== target.accountId || activeQuery.value !== null) {
+    accountId.value = target.accountId;
+    searchText.value = '';
+    activeQuery.value = null;
+    labelId.value = 'INBOX';
+    await startList();
+  }
+  if (accountId.value !== target.accountId) return;
+  await openThread(target.threadId);
+}
+
+function queueNotificationOpen(): void {
+  const target = pendingMailOpen.value;
+  if (target === null) return;
+  queuedOpen = target;
+  pendingMailOpen.value = null;
+}
+
+async function drainNotificationOpen(): Promise<void> {
+  queueNotificationOpen();
+  const target = queuedOpen;
+  if (target === null || accounts.value.length === 0) return;
+  queuedOpen = null;
+  await openNotified(target);
+}
+
 onBeforeRouteLeave((to) => {
   if (compose.value === null || !composeDirty()) return true;
   askDiscard(() => {
@@ -1760,6 +1928,13 @@ onBeforeRouteLeave((to) => {
 
 onMounted(() => {
   window.addEventListener('beforeunload', warnBeforeUnload);
+  window.addEventListener('focus', onWindowFocus);
+  stopSyncListen = gmail().listenSync((event) => {
+    void applySync(event);
+  });
+  syncClock = window.setInterval(() => {
+    syncNow.value = Date.now();
+  }, 30_000);
   void google()
     .listAccounts()
     .then(async (list) => {
@@ -1771,6 +1946,7 @@ onMounted(() => {
       }
       accountId.value = first.id;
       await startList();
+      await drainNotificationOpen();
     })
     .catch((error: unknown) => {
       fail(error);
@@ -1780,6 +1956,21 @@ onMounted(() => {
 onUnmounted(() => {
   clearSaveTimer();
   window.removeEventListener('beforeunload', warnBeforeUnload);
+  window.removeEventListener('focus', onWindowFocus);
+  stopSyncListen();
+  window.clearInterval(syncClock);
+});
+
+watch([accountId, labelId, activeQuery, openId], () => {
+  publishView();
+});
+
+watch(accountId, () => {
+  void loadSyncStatus();
+});
+
+watch(pendingMailOpen, () => {
+  void drainNotificationOpen();
 });
 </script>
 
@@ -1837,6 +2028,33 @@ onUnmounted(() => {
             Search
           </button>
         </form>
+      </div>
+      <div v-if="accountId !== ''" class="mail-sync">
+        <p v-if="syncState?.state === 'needs-reauth'" role="status">
+          Reconnect this Google account before changing mail.
+          <RouterLink class="text-link" to="/integrations">Reconnect</RouterLink>
+        </p>
+        <p v-else-if="syncLine !== ''" role="status" :aria-busy="syncBusy() ? 'true' : undefined">
+          {{ syncLine }}
+        </p>
+        <label class="choice">
+          <input
+            type="checkbox"
+            :checked="notificationsOn"
+            aria-label="Notify me of new mail"
+            @change="toggleNotifications"
+          />
+          Notify me of new mail
+        </label>
+        <label class="choice">
+          <input
+            type="checkbox"
+            :checked="contentShown"
+            aria-label="Show sender and subject"
+            @change="toggleContent"
+          />
+          Show sender and subject
+        </label>
       </div>
       <p v-if="composeStatus" role="status">{{ composeStatus }}</p>
       <p v-if="actionNotice && openId === null" role="alert">{{ actionNotice }}</p>

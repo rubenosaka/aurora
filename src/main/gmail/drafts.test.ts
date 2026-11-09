@@ -561,9 +561,9 @@ describe('gmail drafts', () => {
     assert.equal(lists, 0);
   });
 
-  it('keeps the modify scope and schema version 2', () => {
+  it('keeps the modify scope and schema version 3', () => {
     const scopes: readonly string[] = googleScopes;
-    assert.equal(schemaVersion, 2);
+    assert.equal(schemaVersion, 3);
     assert.equal(scopes.includes('https://www.googleapis.com/auth/gmail.modify'), true);
     assert.equal(scopes.includes('https://www.googleapis.com/auth/gmail.compose'), false);
     assert.equal(scopes.includes('https://www.googleapis.com/auth/gmail.send'), false);

@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { historicalReadonlyGrant } from '../../shared/google-accounts.ts';
 import { PersistenceError, rethrowPersistence } from './errors.ts';
 
-export const schemaVersion = 2;
+export const schemaVersion = 3;
 
 const openOptions = {
   enableForeignKeyConstraints: true,
@@ -63,7 +63,64 @@ CREATE TABLE credential_secrets (
   UNIQUE (account_id, kind),
   UNIQUE (oauth_client_id, kind)
 ) STRICT;
+
+CREATE TABLE mailbox_sync (
+  account_id TEXT PRIMARY KEY REFERENCES connected_accounts (id) ON DELETE CASCADE,
+  history_id TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (
+    length(history_id) BETWEEN 1 AND 32 AND
+    history_id GLOB '[0-9]*' AND
+    history_id NOT GLOB '*[^0-9]*'
+  )
+) STRICT;
+
+CREATE TABLE notified_messages (
+  account_id TEXT NOT NULL REFERENCES connected_accounts (id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL,
+  notified_at TEXT NOT NULL,
+  PRIMARY KEY (account_id, message_id),
+  CHECK (length(message_id) BETWEEN 1 AND 128)
+) STRICT;
 `;
+
+const syncSchemaSql = `
+CREATE TABLE mailbox_sync (
+  account_id TEXT PRIMARY KEY REFERENCES connected_accounts (id) ON DELETE CASCADE,
+  history_id TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (
+    length(history_id) BETWEEN 1 AND 32 AND
+    history_id GLOB '[0-9]*' AND
+    history_id NOT GLOB '*[^0-9]*'
+  )
+) STRICT;
+
+CREATE TABLE notified_messages (
+  account_id TEXT NOT NULL REFERENCES connected_accounts (id) ON DELETE CASCADE,
+  message_id TEXT NOT NULL,
+  notified_at TEXT NOT NULL,
+  PRIMARY KEY (account_id, message_id),
+  CHECK (length(message_id) BETWEEN 1 AND 128)
+) STRICT;
+`;
+
+const migrationStampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+function settingsSql(stamp: string): string {
+  return `
+INSERT INTO app_settings (key, value, updated_at)
+SELECT 'gmail.notifications', 'on', '${stamp}'
+WHERE NOT EXISTS (
+  SELECT 1 FROM app_settings WHERE key = 'gmail.notifications'
+);
+INSERT INTO app_settings (key, value, updated_at)
+SELECT 'gmail.notification_content', 'show', '${stamp}'
+WHERE NOT EXISTS (
+  SELECT 1 FROM app_settings WHERE key = 'gmail.notification_content'
+);
+`;
+}
 
 function closeQuietly(database: DatabaseSync | null): void {
   if (database === null) return;
@@ -126,7 +183,7 @@ function configureConnection(database: DatabaseSync): void {
 function applyMigration(
   database: DatabaseSync,
   version: number,
-  sql: string,
+  sqlFor: (stamp: string) => string,
   now: () => Date
 ): void {
   try {
@@ -135,10 +192,12 @@ function applyMigration(
     rethrowPersistence(error, 'migration-failed');
   }
   try {
-    database.exec(sql);
+    const stamp = now().toISOString();
+    if (!migrationStampPattern.test(stamp)) throw new PersistenceError('migration-failed');
+    database.exec(sqlFor(stamp));
     database
       .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
-      .run(version, now().toISOString());
+      .run(version, stamp);
     database.exec('COMMIT');
   } catch (error) {
     try {
@@ -154,14 +213,24 @@ function migrate(database: DatabaseSync, now: () => Date): void {
   const version = readSchemaVersion(database);
   if (version === schemaVersion) return;
   if (version === 0) {
-    applyMigration(database, schemaVersion, migrationSql, now);
+    applyMigration(database, schemaVersion, (stamp) => migrationSql + settingsSql(stamp), now);
     return;
   }
   if (version === 1) {
     applyMigration(
       database,
       schemaVersion,
-      `ALTER TABLE connected_accounts ADD COLUMN granted_scopes TEXT NOT NULL DEFAULT '${historicalReadonlyGrant}'`,
+      (stamp) =>
+        `ALTER TABLE connected_accounts ADD COLUMN granted_scopes TEXT NOT NULL DEFAULT '${historicalReadonlyGrant}';\n${syncSchemaSql}\n${settingsSql(stamp)}`,
+      now
+    );
+    return;
+  }
+  if (version === 2) {
+    applyMigration(
+      database,
+      schemaVersion,
+      (stamp) => `${syncSchemaSql}\n${settingsSql(stamp)}`,
       now
     );
     return;

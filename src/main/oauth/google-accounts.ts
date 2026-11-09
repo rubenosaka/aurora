@@ -78,6 +78,8 @@ export interface GoogleAccountDependencies {
   flowTimeoutMs?: number;
   requestTimeoutMs?: number;
   revokeTimeoutMs?: number;
+  onAccountReady?: (accountId: string) => void;
+  onAccountRemoved?: (accountId: string) => void;
 }
 
 export interface GoogleAccountService {
@@ -373,6 +375,7 @@ export function createGoogleAccountService(deps: GoogleAccountDependencies): Goo
         now
       );
       forgetAccess(account.id);
+      deps.onAccountReady?.(account.id);
       return toSummary(account);
     } catch (error) {
       throw asFlowError(error);
@@ -457,6 +460,7 @@ export function createGoogleAccountService(deps: GoogleAccountDependencies): Goo
         }
         deleteConnectedAccount(deps.database, accountId);
         forgetAccess(accountId);
+        deps.onAccountRemoved?.(accountId);
         return { outcome };
       } catch (error) {
         throw asFlowError(error);

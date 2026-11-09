@@ -44,6 +44,12 @@ function pendingMail(): Pick<
   | 'createLabel'
   | 'renameLabel'
   | 'deleteLabel'
+  | 'syncStatus'
+  | 'setNotifications'
+  | 'reportSyncView'
+  | 'syncFocus'
+  | 'listenSync'
+  | 'listenOpen'
 > {
   const denied = async (): Promise<{ ok: false; error: { code: 'internal' } }> => ({
     ok: false,
@@ -72,7 +78,13 @@ function pendingMail(): Pick<
     bulkLabel: denied,
     createLabel: denied,
     renameLabel: denied,
-    deleteLabel: denied
+    deleteLabel: denied,
+    syncStatus: denied,
+    setNotifications: denied,
+    reportSyncView: denied,
+    syncFocus: denied,
+    listenSync: () => () => undefined,
+    listenOpen: () => () => undefined
   };
 }
 

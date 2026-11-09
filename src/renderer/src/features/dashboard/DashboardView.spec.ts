@@ -47,7 +47,13 @@ function gmail(): GmailBridge {
     bulkLabel: async () => ({ ok: false, error: { code: 'internal' } }),
     createLabel: async () => ({ ok: false, error: { code: 'internal' } }),
     renameLabel: async () => ({ ok: false, error: { code: 'internal' } }),
-    deleteLabel: async () => ({ ok: false, error: { code: 'internal' } })
+    deleteLabel: async () => ({ ok: false, error: { code: 'internal' } }),
+    syncStatus: async () => ({ ok: false, error: { code: 'internal' } }),
+    setNotifications: async () => ({ ok: false, error: { code: 'internal' } }),
+    reportSyncView: async () => ({ ok: false, error: { code: 'internal' } }),
+    syncFocus: async () => ({ ok: false, error: { code: 'internal' } }),
+    listenSync: () => () => undefined,
+    listenOpen: () => () => undefined
   };
 }
 

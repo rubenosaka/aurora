@@ -1,3 +1,4 @@
+import { type DatabaseSync } from 'node:sqlite';
 import {
   type GmailBulkLabelRequest,
   type GmailBulkResult,
@@ -38,6 +39,8 @@ import { GmailError } from './errors.ts';
 import { classifyGmailFailure, readLimitedBody, recordGmailFailure, retryDelay } from './http.ts';
 import { acceptExternalUrl } from './links.ts';
 import { decodeConversation, utf8Size } from './mime.ts';
+import { type SyncToast } from './notifier.ts';
+import { createMailboxSync, type MailboxSync, type SyncScheduler } from './sync.ts';
 import {
   type AttachmentDownloadRequest,
   type AttachmentDropRequest,
@@ -72,6 +75,13 @@ export interface GmailReaderDependencies {
   pickFiles?: () => Promise<Array<{ name: string; bytes: Uint8Array }>>;
   chooseSavePath?: (fileName: string) => Promise<string | null>;
   writeSave?: (target: string, bytes: Uint8Array) => Promise<void>;
+  sync?: {
+    database: DatabaseSync;
+    notify: SyncToast;
+    emit: (channel: string, payload: unknown) => void;
+    now?: () => Date;
+    schedule?: SyncScheduler;
+  };
 }
 
 export interface GmailReader {
@@ -134,6 +144,7 @@ export interface GmailReader {
   createLabel(request: GmailLabelNameRequest): Promise<GmailLabelDefinition>;
   renameLabel(request: GmailLabelRenameRequest): Promise<GmailLabelDefinition>;
   deleteLabel(request: GmailLabelDeleteRequest): Promise<GmailLabelDeleted>;
+  sync: MailboxSync | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -429,6 +440,7 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
   const busyThreads = new Set<string>();
   const busyBulk = new Set<string>();
   const busySends = new Set<string>();
+  let mailbox: MailboxSync | null = null;
 
   async function gmailJson(
     token: string,
@@ -554,6 +566,7 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
       busyBulk.add(accountId);
       return () => {
         busyBulk.delete(accountId);
+        if (mailbox !== null) mailbox.afterBulk(accountId);
       };
     },
     normalizeError: asGmail
@@ -570,6 +583,20 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
     chooseSavePath: deps.chooseSavePath,
     writeSave: deps.writeSave
   });
+
+  if (deps.sync !== undefined) {
+    const configured = deps.sync;
+    mailbox = createMailboxSync({
+      database: configured.database,
+      listAccounts: () => deps.accounts.listAccounts(),
+      read: (accountId, url) => withRead(accountId, () => authed(accountId, url, readRequest)),
+      bulkBusy: (accountId) => busyBulk.has(accountId),
+      notify: configured.notify,
+      emit: configured.emit,
+      ...(configured.now === undefined ? {} : { now: configured.now }),
+      ...(configured.schedule === undefined ? {} : { schedule: configured.schedule })
+    });
+  }
 
   return {
     async listLabels(accountId) {
@@ -719,7 +746,8 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
     },
     deleteLabel(request) {
       return bulk.deleteLabel(request);
-    }
+    },
+    sync: mailbox
   };
 
   function reserve(accountId: string, threadId: string): () => void {

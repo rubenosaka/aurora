@@ -1,5 +1,6 @@
 import { type IpcMainInvokeEvent } from 'electron';
 import { GmailError } from './gmail/errors.ts';
+import { type MailboxSync } from './gmail/sync.ts';
 import { type GmailReader } from './gmail/reader.ts';
 import { isAuthorizedSender, type SenderSnapshot } from './trusted-sender.ts';
 import { isGoogleAccountId } from '../shared/google-accounts.ts';
@@ -9,6 +10,10 @@ import {
   gmailBulkLabelChannel,
   gmailBulkThreadsChannel,
   gmailAttachmentDownloadChannel,
+  gmailNotificationsSetChannel,
+  gmailSyncFocusChannel,
+  gmailSyncStatusChannel,
+  gmailSyncViewChannel,
   gmailAttachmentDropChannel,
   gmailAttachmentPickChannel,
   gmailComposeSeedChannel,
@@ -44,14 +49,21 @@ import {
   parseGmailLabelName,
   parseGmailLabelRename,
   parseGmailOpenedLink,
+  parseGmailNotificationPreference,
   parseGmailReadState,
   parseGmailStarChanged,
+  parseGmailSyncAccepted,
+  parseGmailSyncFocus,
+  parseGmailSyncStatus,
+  parseGmailSyncView,
   parseGmailThread,
   parseGmailThreadChanged,
   parseGmailThreadList,
   parseGmailThreadQuery,
   type GmailErrorCode,
-  type GmailResult
+  type GmailResult,
+  type GmailSyncAccepted,
+  type GmailSyncStatus
 } from '../shared/gmail.ts';
 import {
   parseComposeMessage,
@@ -94,7 +106,9 @@ type GmailIpcValue =
   | Awaited<ReturnType<GmailReader['downloadAttachment']>>
   | Awaited<ReturnType<GmailReader['bulkThreads']>>
   | Awaited<ReturnType<GmailReader['createLabel']>>
-  | Awaited<ReturnType<GmailReader['deleteLabel']>>;
+  | Awaited<ReturnType<GmailReader['deleteLabel']>>
+  | GmailSyncStatus
+  | GmailSyncAccepted;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -198,7 +212,8 @@ export async function handleGmailChannel(
   channel: string,
   sender: SenderSnapshot,
   args: readonly unknown[],
-  reader: GmailReader
+  reader: GmailReader,
+  sync: MailboxSync | null = null
 ): Promise<GmailResult<GmailIpcValue>> {
   if (!isAuthorizedSender(sender)) return rejected('unauthorized');
   try {
@@ -384,6 +399,43 @@ export async function handleGmailChannel(
       if (parseGmailLabelDeleted(value) === null) return rejected('invalid-response');
       return { ok: true, value };
     }
+    if (channel === gmailSyncStatusChannel) {
+      const accountId = accountArgument(args);
+      if (accountId === null) return rejected('invalid-request');
+      if (sync === null) return rejected('unavailable');
+      const value = sync.status(accountId);
+      if (parseGmailSyncStatus(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailNotificationsSetChannel) {
+      if (args.length !== 1) return rejected('invalid-request');
+      const preference = parseGmailNotificationPreference(args[0]);
+      if (preference === null) return rejected('invalid-request');
+      if (sync === null) return rejected('unavailable');
+      const value = sync.setPreferences(preference);
+      if (parseGmailSyncStatus(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailSyncViewChannel) {
+      if (args.length !== 1) return rejected('invalid-request');
+      const view = parseGmailSyncView(args[0]);
+      if (view === null) return rejected('invalid-request');
+      if (sync === null) return rejected('unavailable');
+      sync.reportView(view);
+      const value = { accepted: true as const };
+      if (parseGmailSyncAccepted(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailSyncFocusChannel) {
+      if (args.length !== 1) return rejected('invalid-request');
+      const focus = parseGmailSyncFocus(args[0]);
+      if (focus === null) return rejected('invalid-request');
+      if (sync === null) return rejected('unavailable');
+      sync.focus(focus.accountId);
+      const value = sync.status(focus.accountId);
+      if (parseGmailSyncStatus(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
     if (channel === gmailOpenLinkChannel) {
       const url = linkArgument(args);
       if (url === null) return rejected('invalid-request');
@@ -403,11 +455,12 @@ export function attachGmailIpc(
     listener: (event: IpcMainInvokeEvent, ...args: unknown[]) => Promise<GmailResult<GmailIpcValue>>
   ) => void,
   senderFor: (event: IpcMainInvokeEvent) => SenderSnapshot,
-  reader: GmailReader
+  reader: GmailReader,
+  sync: MailboxSync | null = null
 ): void {
   for (const channel of gmailChannels) {
     register(channel, (event, ...args) =>
-      handleGmailChannel(channel, senderFor(event), args, reader)
+      handleGmailChannel(channel, senderFor(event), args, reader, sync)
     );
   }
 }

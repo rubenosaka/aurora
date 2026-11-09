@@ -3,6 +3,8 @@ import {
   BrowserWindow,
   dialog,
   ipcMain,
+  Notification,
+  powerMonitor,
   safeStorage,
   shell,
   type IpcMainInvokeEvent
@@ -23,6 +25,8 @@ import { attachGmailIpc } from './gmail-ipc.ts';
 import { writeDownload } from './gmail/download-file.ts';
 import { GmailError } from './gmail/errors.ts';
 import { createGmailReader } from './gmail/reader.ts';
+import { auroraAppUserModelId, createElectronNotifier } from './gmail/notifier.ts';
+import { type MailboxSync } from './gmail/sync.ts';
 import { attachmentByteLimit } from '../shared/mail-draft.ts';
 import { attachGoogleIpc } from './google-ipc.ts';
 import { createGoogleAccountService, type GoogleAccountService } from './oauth/google-accounts.ts';
@@ -31,6 +35,7 @@ let mainWindow: BrowserWindow | null = null;
 let applicationDatabase: DatabaseSync | null = null;
 let credentialCipher: SecretCipher | null = null;
 let googleAccounts: GoogleAccountService | null = null;
+let mailboxSync: MailboxSync | null = null;
 
 function closePersistence(): void {
   const database = applicationDatabase;
@@ -85,12 +90,15 @@ function createWindow(): void {
 registerAppInfoHandler();
 
 app.on('will-quit', () => {
+  mailboxSync?.shutdown();
+  mailboxSync = null;
   googleAccounts?.shutdown();
   googleAccounts = null;
   closePersistence();
 });
 
 void app.whenReady().then(() => {
+  if (process.platform === 'win32') app.setAppUserModelId(auroraAppUserModelId);
   try {
     applicationDatabase = openApplicationDatabase({
       userDataPath: app.getPath('userData'),
@@ -108,7 +116,13 @@ void app.whenReady().then(() => {
       database,
       cipher,
       fetchImpl: globalThis.fetch.bind(globalThis),
-      openExternal: (url) => shell.openExternal(url)
+      openExternal: (url) => shell.openExternal(url),
+      onAccountReady: (accountId) => {
+        mailboxSync?.accountConnected(accountId);
+      },
+      onAccountRemoved: (accountId) => {
+        mailboxSync?.accountDisconnected(accountId);
+      }
     });
     attachGoogleIpc(
       (channel, listener) => {
@@ -146,14 +160,46 @@ void app.whenReady().then(() => {
         if (chosen.canceled || chosen.filePath === undefined) return null;
         return chosen.filePath;
       },
-      writeSave: (target, bytes) => writeDownload(target, bytes)
+      writeSave: (target, bytes) => writeDownload(target, bytes),
+      sync: {
+        database,
+        notify: createElectronNotifier({
+          platform: process.platform,
+          setAppUserModelId: (id) => app.setAppUserModelId(id),
+          focus: () => {
+            const window = mainWindow;
+            if (window === null || window.isDestroyed()) return;
+            if (window.isMinimized()) window.restore();
+            window.show();
+            window.focus();
+          },
+          create: ({ title, body }) => {
+            const notification = new Notification({ title, body });
+            return {
+              show: () => notification.show(),
+              on: (event, listener) => {
+                if (event === 'click') notification.on('click', listener);
+                else notification.on('failed', listener);
+              }
+            };
+          }
+        }),
+        emit: (channel, payload) => {
+          const window = mainWindow;
+          if (window === null || window.isDestroyed()) return;
+          window.webContents.send(channel, payload);
+        }
+      }
     });
+    mailboxSync = gmail.sync;
+    mailboxSync?.start();
     attachGmailIpc(
       (channel, listener) => {
         ipcMain.handle(channel, listener);
       },
       senderSnapshot,
-      gmail
+      gmail,
+      gmail.sync
     );
   } catch (error) {
     dialog.showErrorBox('Aurora', persistenceStartupMessage(error));
@@ -162,6 +208,12 @@ void app.whenReady().then(() => {
   }
 
   createWindow();
+  powerMonitor.on('suspend', () => {
+    mailboxSync?.suspend();
+  });
+  powerMonitor.on('resume', () => {
+    mailboxSync?.resume();
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

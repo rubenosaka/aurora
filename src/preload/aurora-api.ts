@@ -17,6 +17,12 @@ import {
   gmailLabelCreateChannel,
   gmailLabelDeleteChannel,
   gmailLabelRenameChannel,
+  gmailNotificationOpenChannel,
+  gmailNotificationsSetChannel,
+  gmailSyncChangedChannel,
+  gmailSyncFocusChannel,
+  gmailSyncStatusChannel,
+  gmailSyncViewChannel,
   gmailDraftDeleteChannel,
   gmailDraftOpenChannel,
   gmailDraftSaveChannel,
@@ -38,10 +44,14 @@ import {
   parseGmailLabelDefinition,
   parseGmailLabelDeleted,
   parseGmailLabelList,
+  parseGmailNotificationOpen,
   parseGmailOpenedLink,
   parseGmailReadState,
   parseGmailResult,
   parseGmailStarChanged,
+  parseGmailSyncAccepted,
+  parseGmailSyncChanged,
+  parseGmailSyncStatus,
   parseGmailThread,
   parseGmailThreadChanged,
   parseGmailThreadList,
@@ -55,10 +65,16 @@ import {
   type GmailLabelList,
   type GmailLabelNameRequest,
   type GmailLabelRenameRequest,
+  type GmailNotificationOpen,
+  type GmailNotificationPreference,
   type GmailOpenedLink,
   type GmailReadState,
   type GmailResult,
   type GmailStarChanged,
+  type GmailSyncAccepted,
+  type GmailSyncChanged,
+  type GmailSyncStatus,
+  type GmailSyncView,
   type GmailThread,
   type GmailThreadChanged,
   type GmailThreadList,
@@ -112,6 +128,23 @@ import {
 
 export type AuroraInvoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
 
+export type AuroraListen = (channel: string, listener: (payload: unknown) => void) => () => void;
+
+const syncEventChannels = new Set([gmailSyncChangedChannel, gmailNotificationOpenChannel]);
+
+function subscribe<T>(
+  listen: AuroraListen | undefined,
+  channel: string,
+  parse: (value: unknown) => T | null,
+  listener: (value: T) => void
+): () => void {
+  if (listen === undefined || !syncEventChannels.has(channel)) return () => undefined;
+  return listen(channel, (payload) => {
+    const parsed = parse(payload);
+    if (parsed !== null) listener(parsed);
+  });
+}
+
 function internalGoogle<T>(): GoogleResult<T> {
   return { ok: false, error: { code: 'internal' } };
 }
@@ -132,7 +165,7 @@ function gmailAction<T>(
     .catch(() => internalGmail());
 }
 
-export function createAuroraApi(invoke: AuroraInvoke): AuroraBridge {
+export function createAuroraApi(invoke: AuroraInvoke, listen?: AuroraListen): AuroraBridge {
   return Object.freeze({
     app: Object.freeze({
       getInfo(): Promise<IpcResult<AppInfo>> {
@@ -349,6 +382,31 @@ export function createAuroraApi(invoke: AuroraInvoke): AuroraBridge {
       },
       deleteLabel(request: GmailLabelDeleteRequest): Promise<GmailResult<GmailLabelDeleted>> {
         return gmailAction(invoke, gmailLabelDeleteChannel, request, parseGmailLabelDeleted);
+      },
+      syncStatus(accountId: string): Promise<GmailResult<GmailSyncStatus>> {
+        return gmailAction(invoke, gmailSyncStatusChannel, { accountId }, parseGmailSyncStatus);
+      },
+      setNotifications(
+        preference: GmailNotificationPreference
+      ): Promise<GmailResult<GmailSyncStatus>> {
+        return gmailAction(invoke, gmailNotificationsSetChannel, preference, parseGmailSyncStatus);
+      },
+      reportSyncView(view: GmailSyncView): Promise<GmailResult<GmailSyncAccepted>> {
+        return gmailAction(invoke, gmailSyncViewChannel, view, parseGmailSyncAccepted);
+      },
+      syncFocus(accountId: string): Promise<GmailResult<GmailSyncStatus>> {
+        return gmailAction(invoke, gmailSyncFocusChannel, { accountId }, parseGmailSyncStatus);
+      },
+      listenSync(listener: (event: GmailSyncChanged) => void): () => void {
+        return subscribe(listen, gmailSyncChangedChannel, parseGmailSyncChanged, listener);
+      },
+      listenOpen(listener: (event: GmailNotificationOpen) => void): () => void {
+        return subscribe(
+          listen,
+          gmailNotificationOpenChannel,
+          parseGmailNotificationOpen,
+          listener
+        );
       }
     })
   });

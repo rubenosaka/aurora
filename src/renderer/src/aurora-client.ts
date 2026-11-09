@@ -15,6 +15,8 @@ import {
   parseGmailOpenedLink,
   parseGmailReadState,
   parseGmailStarChanged,
+  parseGmailSyncAccepted,
+  parseGmailSyncStatus,
   parseGmailThread,
   parseGmailThreadChanged,
   parseGmailThreadList,
@@ -23,6 +25,10 @@ import {
   type GmailLabelDeleteRequest,
   type GmailLabelNameRequest,
   type GmailLabelRenameRequest,
+  type GmailNotificationPreference,
+  type GmailSyncChanged,
+  type GmailNotificationOpen,
+  type GmailSyncView,
   type GmailThreadQuery
 } from '../../shared/gmail.ts';
 import {
@@ -263,6 +269,24 @@ export function createRendererAppApi(bridge: AuroraBridge): AuroraApi {
       },
       deleteLabel(request: GmailLabelDeleteRequest) {
         return readGmail(bridge.gmail.deleteLabel(request), parseGmailLabelDeleted);
+      },
+      syncStatus(accountId: string) {
+        return readGmail(bridge.gmail.syncStatus(accountId), parseGmailSyncStatus);
+      },
+      setNotifications(preference: GmailNotificationPreference) {
+        return readGmail(bridge.gmail.setNotifications(preference), parseGmailSyncStatus);
+      },
+      reportSyncView(view: GmailSyncView) {
+        return readGmail(bridge.gmail.reportSyncView(view), parseGmailSyncAccepted);
+      },
+      syncFocus(accountId: string) {
+        return readGmail(bridge.gmail.syncFocus(accountId), parseGmailSyncStatus);
+      },
+      listenSync(listener: (event: GmailSyncChanged) => void) {
+        return bridge.gmail.listenSync(listener);
+      },
+      listenOpen(listener: (event: GmailNotificationOpen) => void) {
+        return bridge.gmail.listenOpen(listener);
       }
     })
   });

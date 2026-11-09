@@ -19,11 +19,16 @@ import {
   gmailDraftSaveChannel,
   gmailDraftSendChannel,
   gmailLabelsChannel,
+  gmailNotificationsSetChannel,
   gmailOpenLinkChannel,
   gmailSendMessageChannel,
+  gmailSyncFocusChannel,
+  gmailSyncStatusChannel,
+  gmailSyncViewChannel,
   gmailThreadChannel,
   gmailThreadsChannel
 } from '../shared/gmail.ts';
+import { type MailboxSync } from './gmail/sync.ts';
 
 const accountId = '00000000-0000-4000-8000-000000000001';
 
@@ -104,6 +109,7 @@ function reader(overrides: Partial<GmailReader> = {}): GmailReader {
     createLabel: async () => ({ id: 'Label_1', name: 'Trips' }),
     renameLabel: async () => ({ id: 'Label_1', name: 'Travel' }),
     deleteLabel: async () => ({ id: 'Label_1' }),
+    sync: null,
     ...overrides
   };
 }
@@ -499,6 +505,67 @@ describe('gmail ipc', () => {
         })
       ),
       { ok: false, error: { code: 'label-exists' } }
+    );
+  });
+
+  it('validates sync requests and returns the sync status', async () => {
+    const status = {
+      state: 'idle' as const,
+      lastSuccessAt: '2026-11-09T12:00:00.000Z',
+      notifications: 'on' as const,
+      content: 'show' as const,
+      pending: false,
+      notificationsBlocked: false
+    };
+    let focused = 0;
+    const sync = {
+      status: () => status,
+      setPreferences: (input: { notifications: 'on' | 'off'; content: 'show' | 'hide' }) => ({
+        ...status,
+        notifications: input.notifications,
+        content: input.content
+      }),
+      reportView: () => undefined,
+      focus: () => {
+        focused += 1;
+      }
+    } as unknown as MailboxSync;
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailNotificationsSetChannel,
+        sender(),
+        [{ accountId, notifications: 'on', content: 'show', extra: true }],
+        reader(),
+        sync
+      ),
+      { ok: false, error: { code: 'invalid-request' } }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailSyncStatusChannel,
+        sender(),
+        [{ accountId, historyId: '1' }],
+        reader(),
+        sync
+      ),
+      { ok: false, error: { code: 'invalid-request' } }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(gmailSyncStatusChannel, sender(), [{ accountId }], reader(), sync),
+      { ok: true, value: status }
+    );
+    assert.equal(focused, 0);
+    await handleGmailChannel(gmailSyncFocusChannel, sender(), [{ accountId }], reader(), sync);
+    assert.equal(focused, 1);
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailSyncViewChannel,
+        sender(),
+        [{ accountId, labelId: 'INBOX', query: null, threadId: null }],
+        reader(),
+        sync
+      ),
+      { ok: true, value: { accepted: true } }
     );
   });
 });

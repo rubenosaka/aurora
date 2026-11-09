@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GmailIpcError, type GmailApi, type GmailThreadList } from '../../../../shared/gmail.ts';
 import { type GoogleAccountSummary, type GoogleApi } from '../../../../shared/google-accounts.ts';
 import { createAppRouter } from '../../app/router.ts';
+import { pendingMailOpen } from './mail-open.ts';
 import MailView from './MailView.vue';
 
 const closeMail: Array<() => void> = [];
@@ -24,6 +25,7 @@ function mountMail(options?: Parameters<typeof mount>[1]) {
 afterEach(() => {
   for (const close of closeMail) close();
   closeMail.length = 0;
+  pendingMailOpen.value = null;
 });
 
 const ada: GoogleAccountSummary = {
@@ -67,6 +69,12 @@ function mailActions(): Pick<
   | 'createLabel'
   | 'renameLabel'
   | 'deleteLabel'
+  | 'syncStatus'
+  | 'setNotifications'
+  | 'reportSyncView'
+  | 'syncFocus'
+  | 'listenSync'
+  | 'listenOpen'
 > {
   return {
     markRead: async () => ({ threadId: 'threadsame', unread: false }),
@@ -122,7 +130,34 @@ function mailActions(): Pick<
     }),
     createLabel: async () => ({ id: 'Label_1', name: 'Trips' }),
     renameLabel: async () => ({ id: 'Label_1', name: 'Travel' }),
-    deleteLabel: async () => ({ id: 'Label_1' })
+    deleteLabel: async () => ({ id: 'Label_1' }),
+    syncStatus: async () => ({
+      state: 'idle' as const,
+      lastSuccessAt: '2026-11-09T10:00:00.000Z',
+      notifications: 'on' as const,
+      content: 'show' as const,
+      pending: false,
+      notificationsBlocked: false
+    }),
+    setNotifications: async (preference) => ({
+      state: 'idle' as const,
+      lastSuccessAt: '2026-11-09T10:00:00.000Z',
+      notifications: preference.notifications,
+      content: preference.content,
+      pending: false,
+      notificationsBlocked: false
+    }),
+    reportSyncView: async () => ({ accepted: true as const }),
+    syncFocus: async () => ({
+      state: 'idle' as const,
+      lastSuccessAt: '2026-11-09T10:00:00.000Z',
+      notifications: 'on' as const,
+      content: 'show' as const,
+      pending: false,
+      notificationsBlocked: false
+    }),
+    listenSync: () => () => undefined,
+    listenOpen: () => () => undefined
   };
 }
 
@@ -1229,5 +1264,78 @@ describe('MailView', () => {
     await flushPromises();
     expect(quiet.find('button[aria-label="Labels"]').exists()).toBe(false);
     expect(quiet.find('[aria-label="Select all visible conversations"]').exists()).toBe(false);
+  });
+
+  it('shows sync status, keeps another account still, and opens a notification', async () => {
+    const reads: string[] = [];
+    const preferences: string[] = [];
+    let syncListener: ((event: unknown) => void) | undefined;
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => labels,
+      listThreads: async () => ({ threads: [], nextPageToken: null }),
+      readThread: async (_accountId, threadId) => {
+        reads.push(threadId);
+        return { id: threadId, messages: [] };
+      },
+      openLink: async () => ({ opened: true }),
+      syncStatus: async () => ({
+        state: 'idle' as const,
+        lastSuccessAt: '2026-11-09T10:00:00.000Z',
+        notifications: 'on' as const,
+        content: 'show' as const,
+        pending: false,
+        notificationsBlocked: false
+      }),
+      setNotifications: async (preference) => {
+        preferences.push(preference.content);
+        return {
+          state: 'idle' as const,
+          lastSuccessAt: '2026-11-09T10:00:00.000Z',
+          notifications: preference.notifications,
+          content: preference.content,
+          pending: false,
+          notificationsBlocked: false
+        };
+      },
+      listenSync: (listener) => {
+        syncListener = listener as (event: unknown) => void;
+        return () => undefined;
+      }
+    };
+    const wrapper = mountMail({
+      props: {
+        googleApi: {
+          getClientId: async () => ({ clientId: null, secretConfigured: false }),
+          saveClientId: async () => ({
+            clientId: 'desktop-client.apps.googleusercontent.com',
+            secretConfigured: false
+          }),
+          listAccounts: async () => ({ accounts: [ada, grace] }),
+          connect: async () => ada,
+          reconnect: async () => ada,
+          cancel: async () => ({ cancelled: true }),
+          disconnect: async () => ({ outcome: 'revoked' })
+        },
+        gmailApi
+      }
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain('Updated');
+    expect(wrapper.text()).toContain('Notify me of new mail');
+    await wrapper.get('[aria-label="Show sender and subject"]').setValue(false);
+    await flushPromises();
+    expect(preferences).toEqual(['hide']);
+    syncListener?.({
+      accountId: grace.id,
+      refresh: 'page',
+      threadId: null
+    });
+    await flushPromises();
+    expect(reads).toEqual([]);
+    pendingMailOpen.value = { accountId: ada.id, threadId: 'threadsame' };
+    await flushPromises();
+    expect(reads).toEqual(['threadsame']);
+    pendingMailOpen.value = null;
   });
 });

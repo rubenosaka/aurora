@@ -12,6 +12,13 @@ import {
   parseGmailThread,
   parseGmailThreadList,
   parseGmailThreadQuery,
+  parseGmailNotificationOpen,
+  parseGmailNotificationPreference,
+  parseGmailSyncAccepted,
+  parseGmailSyncChanged,
+  parseGmailSyncFocus,
+  parseGmailSyncStatus,
+  parseGmailSyncView,
   unwrapGmailResult
 } from './gmail.ts';
 
@@ -160,5 +167,70 @@ describe('gmail contracts', () => {
     assert.equal(parseGmailResult({ ok: true }, () => null).ok, false);
     assert.equal(parseGmailResult({ ok: false, error: { code: 'nope' } }, () => null).ok, false);
     assert.equal(parseGmailResult(null, () => null).ok, false);
+  });
+
+  it('accepts sync status and rejects a navigation target that is not a Gmail id', () => {
+    const accountId = '00000000-0000-4000-8000-000000000001';
+    const status = {
+      state: 'idle',
+      lastSuccessAt: null,
+      notifications: 'on',
+      content: 'show',
+      pending: false,
+      notificationsBlocked: false
+    };
+    assert.equal(parseGmailSyncStatus(status)?.state, 'idle');
+    assert.equal(parseGmailSyncStatus({ ...status, state: 'later' }), null);
+    assert.equal(parseGmailSyncStatus({ ...status, notifications: 'maybe' }), null);
+    assert.equal(parseGmailSyncStatus({ ...status, content: 'maybe' }), null);
+    assert.equal(parseGmailSyncStatus({ ...status, lastSuccessAt: 'yesterday' }), null);
+    assert.equal(parseGmailSyncStatus({ ...status, extra: true }), null);
+    assert.deepEqual(
+      parseGmailNotificationPreference({ accountId, notifications: 'off', content: 'hide' }),
+      { accountId, notifications: 'off', content: 'hide' }
+    );
+    assert.equal(
+      parseGmailNotificationPreference({ accountId, notifications: 'off', content: 'later' }),
+      null
+    );
+    assert.deepEqual(
+      parseGmailSyncView({ accountId: null, labelId: null, query: null, threadId: null }),
+      { accountId: null, labelId: null, query: null, threadId: null }
+    );
+    assert.equal(
+      parseGmailSyncView({ accountId: null, labelId: 'INBOX', query: null, threadId: null }),
+      null
+    );
+    assert.equal(
+      parseGmailSyncView({ accountId: 'nope', labelId: null, query: null, threadId: null }),
+      null
+    );
+    assert.equal(
+      parseGmailSyncView({ accountId, labelId: 'bad id', query: null, threadId: null }),
+      null
+    );
+    assert.equal(
+      parseGmailSyncView({ accountId, labelId: 'INBOX', query: 'x'.repeat(513), threadId: null }),
+      null
+    );
+    assert.equal(
+      parseGmailSyncView({ accountId, labelId: 'INBOX', query: null, threadId: 'bad id' }),
+      null
+    );
+    assert.equal(parseGmailSyncFocus({ accountId })?.accountId, accountId);
+    assert.equal(parseGmailSyncFocus({ accountId: 'nope' }), null);
+    assert.equal(
+      parseGmailSyncChanged({ accountId, refresh: 'thread', threadId: 'threadsame' })?.refresh,
+      'thread'
+    );
+    assert.equal(parseGmailSyncChanged({ accountId, refresh: 'thread', threadId: null }), null);
+    assert.equal(parseGmailSyncChanged({ accountId, refresh: 'later', threadId: null }), null);
+    assert.equal(
+      parseGmailNotificationOpen({ accountId, threadId: 'threadsame' })?.threadId,
+      'threadsame'
+    );
+    assert.equal(parseGmailNotificationOpen({ accountId, threadId: 'bad id' }), null);
+    assert.deepEqual(parseGmailSyncAccepted({ accepted: true }), { accepted: true });
+    assert.equal(parseGmailSyncAccepted({ accepted: false }), null);
   });
 });

@@ -49,6 +49,8 @@ describe('openAuroraDatabase', () => {
       'app_settings',
       'connected_accounts',
       'credential_secrets',
+      'mailbox_sync',
+      'notified_messages',
       'oauth_clients',
       'schema_migrations'
     ]);
@@ -148,6 +150,11 @@ describe('openAuroraDatabase', () => {
         version INTEGER PRIMARY KEY,
         applied_at TEXT NOT NULL
       ) STRICT;
+      CREATE TABLE app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
       CREATE TABLE oauth_clients (
         id TEXT PRIMARY KEY,
         provider TEXT NOT NULL,
@@ -199,6 +206,177 @@ describe('openAuroraDatabase', () => {
       granted_scopes: string;
     };
     assert.equal(row.granted_scopes, historicalReadonlyGrant);
+    assert.equal(readSchemaVersion(database), schemaVersion);
+    const notifications = database
+      .prepare("SELECT value FROM app_settings WHERE key = 'gmail.notifications'")
+      .get() as { value: string };
+    assert.equal(notifications.value, 'on');
+    assert.equal(
+      database.prepare("SELECT name FROM sqlite_master WHERE name = 'mailbox_sync'").get() !==
+        undefined,
+      true
+    );
+    database.close();
+  });
+
+  it('migrates schema version 2 and keeps the account', () => {
+    const file = join(tempDir(), 'aurora.sqlite');
+    const legacy = new DatabaseSync(file);
+    legacy.exec(`
+      CREATE TABLE schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE oauth_clients (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (provider, client_id)
+      ) STRICT;
+      CREATE TABLE connected_accounts (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        provider_account_id TEXT NOT NULL,
+        display_name TEXT,
+        email TEXT,
+        status TEXT NOT NULL,
+        oauth_client_id TEXT NOT NULL REFERENCES oauth_clients (id) ON DELETE RESTRICT,
+        granted_scopes TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (provider, provider_account_id)
+      ) STRICT;
+      CREATE TABLE credential_secrets (
+        id TEXT PRIMARY KEY,
+        account_id TEXT REFERENCES connected_accounts (id) ON DELETE CASCADE,
+        oauth_client_id TEXT REFERENCES oauth_clients (id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        ciphertext BLOB NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (
+          (account_id IS NOT NULL AND oauth_client_id IS NULL AND kind = 'refresh_token') OR
+          (account_id IS NULL AND oauth_client_id IS NOT NULL AND kind = 'client_secret')
+        )
+      ) STRICT;
+    `);
+    legacy
+      .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (2, ?)')
+      .run('2026-10-17T00:00:00.000Z');
+    legacy
+      .prepare(
+        `INSERT INTO oauth_clients (id, provider, client_id, created_at, updated_at)
+         VALUES ('00000000-0000-4000-8000-000000000010', 'google', 'client.apps.googleusercontent.com',
+                 '2026-10-17T00:00:00.000Z', '2026-10-17T00:00:00.000Z')`
+      )
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO connected_accounts (
+           id, provider, provider_account_id, display_name, email, status, oauth_client_id,
+           granted_scopes, created_at, updated_at
+         ) VALUES (
+           '00000000-0000-4000-8000-000000000011', 'google', 'google-user', 'Ada',
+           'ada@example.com', 'connected', '00000000-0000-4000-8000-000000000010',
+           'openid email profile https://www.googleapis.com/auth/gmail.modify',
+           '2026-10-17T00:00:00.000Z', '2026-10-17T00:00:00.000Z'
+         )`
+      )
+      .run();
+    legacy
+      .prepare(
+        `INSERT INTO credential_secrets (
+           id, account_id, oauth_client_id, kind, ciphertext, created_at, updated_at
+         ) VALUES (
+           '00000000-0000-4000-8000-000000000012', '00000000-0000-4000-8000-000000000011',
+           NULL, 'refresh_token', ?, '2026-10-17T00:00:00.000Z', '2026-10-17T00:00:00.000Z'
+         )`
+      )
+      .run(Buffer.from('ciphertext'));
+    legacy.close();
+    const database = openAuroraDatabase(file, () => new Date('2026-11-09T10:00:00.000Z'));
+    assert.equal(readSchemaVersion(database), schemaVersion);
+    const account = database
+      .prepare('SELECT email, granted_scopes FROM connected_accounts')
+      .get() as {
+      email: string;
+      granted_scopes: string;
+    };
+    assert.equal(account.email, 'ada@example.com');
+    assert.equal(
+      account.granted_scopes,
+      'openid email profile https://www.googleapis.com/auth/gmail.modify'
+    );
+    const secret = database.prepare('SELECT ciphertext FROM credential_secrets').get() as {
+      ciphertext: Buffer;
+    };
+    assert.equal(Buffer.from(secret.ciphertext).equals(Buffer.from('ciphertext')), true);
+    const content = database
+      .prepare("SELECT value FROM app_settings WHERE key = 'gmail.notification_content'")
+      .get() as { value: string };
+    assert.equal(content.value, 'show');
+    database.close();
+  });
+
+  it('rolls back a failed schema version 2 migration', () => {
+    const file = join(tempDir(), 'aurora.sqlite');
+    const legacy = new DatabaseSync(file);
+    legacy.exec(`
+      CREATE TABLE schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE oauth_clients (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE connected_accounts (
+        id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        provider_account_id TEXT NOT NULL,
+        display_name TEXT,
+        email TEXT,
+        status TEXT NOT NULL,
+        oauth_client_id TEXT NOT NULL,
+        granted_scopes TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+    `);
+    legacy
+      .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (2, ?)')
+      .run('2026-10-17T00:00:00.000Z');
+    legacy.close();
+    assert.throws(
+      () =>
+        openAuroraDatabase(file, () => {
+          throw new Error('clock failed');
+        }),
+      isCode('migration-failed')
+    );
+    const probe = new DatabaseSync(file, { readOnly: true });
+    assert.equal(readSchemaVersion(probe), 2);
+    assert.equal(
+      probe.prepare("SELECT name FROM sqlite_master WHERE name = 'mailbox_sync'").get(),
+      undefined
+    );
+    probe.close();
+    const database = openAuroraDatabase(file);
     assert.equal(readSchemaVersion(database), schemaVersion);
     database.close();
   });

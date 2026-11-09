@@ -26,6 +26,22 @@
   gap: 8px;
 }
 
+.mail-sync {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  color: var(--aurora-muted);
+  font-size: 13px;
+}
+
+.mail-sync .choice {
+  height: 32px;
+  color: var(--aurora-text);
+  font-size: 13px;
+}
+
 .account-field {
   position: relative;
   width: 220px;

@@ -47,6 +47,12 @@ export const gmailDraftSendChannel = 'gmail:draft-send';
 export const gmailAttachmentPickChannel = 'gmail:attachment-pick';
 export const gmailAttachmentDropChannel = 'gmail:attachment-drop';
 export const gmailAttachmentDownloadChannel = 'gmail:attachment-download';
+export const gmailSyncStatusChannel = 'gmail:sync-status';
+export const gmailNotificationsSetChannel = 'gmail:notifications-set';
+export const gmailSyncViewChannel = 'gmail:sync-view';
+export const gmailSyncFocusChannel = 'gmail:sync-focus';
+export const gmailSyncChangedChannel = 'gmail:sync-changed';
+export const gmailNotificationOpenChannel = 'gmail:notification-open';
 
 export const gmailChannels = [
   gmailLabelsChannel,
@@ -75,7 +81,11 @@ export const gmailChannels = [
   gmailDraftSendChannel,
   gmailAttachmentPickChannel,
   gmailAttachmentDropChannel,
-  gmailAttachmentDownloadChannel
+  gmailAttachmentDownloadChannel,
+  gmailSyncStatusChannel,
+  gmailNotificationsSetChannel,
+  gmailSyncViewChannel,
+  gmailSyncFocusChannel
 ] as const;
 
 export type GmailChannel = (typeof gmailChannels)[number];
@@ -294,6 +304,54 @@ export interface GmailThreadQuery {
   labelId: string | null;
   query: string | null;
   pageToken: string | null;
+}
+
+export const gmailSyncStates = [
+  'idle',
+  'bootstrapping',
+  'syncing',
+  'offline',
+  'needs-reauth',
+  'skipped'
+] as const;
+
+export type GmailSyncState = (typeof gmailSyncStates)[number];
+
+export interface GmailSyncStatus {
+  state: GmailSyncState;
+  lastSuccessAt: string | null;
+  notifications: 'on' | 'off';
+  content: 'show' | 'hide';
+  pending: boolean;
+  notificationsBlocked: boolean;
+}
+
+export interface GmailNotificationPreference {
+  accountId: string;
+  notifications: 'on' | 'off';
+  content: 'show' | 'hide';
+}
+
+export interface GmailSyncView {
+  accountId: string | null;
+  labelId: string | null;
+  query: string | null;
+  threadId: string | null;
+}
+
+export interface GmailSyncChanged {
+  accountId: string;
+  refresh: 'none' | 'labels' | 'page' | 'thread';
+  threadId: string | null;
+}
+
+export interface GmailNotificationOpen {
+  accountId: string;
+  threadId: string;
+}
+
+export interface GmailSyncAccepted {
+  accepted: true;
 }
 
 const datePattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -766,6 +824,125 @@ export function parseGmailThreadQuery(value: unknown): GmailThreadQuery | null {
   };
 }
 
+export function parseGmailSyncStatus(value: unknown): GmailSyncStatus | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      'state',
+      'lastSuccessAt',
+      'notifications',
+      'content',
+      'pending',
+      'notificationsBlocked'
+    ]) ||
+    typeof value.pending !== 'boolean' ||
+    typeof value.notificationsBlocked !== 'boolean' ||
+    (value.notifications !== 'on' && value.notifications !== 'off') ||
+    (value.content !== 'show' && value.content !== 'hide')
+  ) {
+    return null;
+  }
+  const state = gmailSyncStates.find((item) => item === value.state);
+  if (state === undefined) return null;
+  const lastSuccessAt = optionalDate(value.lastSuccessAt);
+  if (lastSuccessAt === undefined) return null;
+  return {
+    state,
+    lastSuccessAt,
+    notifications: value.notifications,
+    content: value.content,
+    pending: value.pending,
+    notificationsBlocked: value.notificationsBlocked
+  };
+}
+
+export function parseGmailNotificationPreference(
+  value: unknown
+): GmailNotificationPreference | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['accountId', 'notifications', 'content']) ||
+    !isGoogleAccountId(value.accountId) ||
+    (value.notifications !== 'on' && value.notifications !== 'off') ||
+    (value.content !== 'show' && value.content !== 'hide')
+  ) {
+    return null;
+  }
+  return {
+    accountId: value.accountId,
+    notifications: value.notifications,
+    content: value.content
+  };
+}
+
+export function parseGmailSyncView(value: unknown): GmailSyncView | null {
+  if (!isRecord(value) || !hasExactKeys(value, ['accountId', 'labelId', 'query', 'threadId'])) {
+    return null;
+  }
+  if (value.accountId === null) {
+    if (value.labelId !== null || value.query !== null || value.threadId !== null) return null;
+    return { accountId: null, labelId: null, query: null, threadId: null };
+  }
+  if (!isGoogleAccountId(value.accountId)) return null;
+  if (value.labelId !== null && !isGmailId(value.labelId)) return null;
+  const query = boundedText(value.query, 512);
+  if (query === undefined) return null;
+  if (value.threadId !== null && !isGmailId(value.threadId)) return null;
+  return {
+    accountId: value.accountId,
+    labelId: value.labelId,
+    query,
+    threadId: value.threadId
+  };
+}
+
+export function parseGmailSyncFocus(value: unknown): { accountId: string } | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['accountId']) ||
+    !isGoogleAccountId(value.accountId)
+  ) {
+    return null;
+  }
+  return { accountId: value.accountId };
+}
+
+export function parseGmailSyncChanged(value: unknown): GmailSyncChanged | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['accountId', 'refresh', 'threadId']) ||
+    !isGoogleAccountId(value.accountId) ||
+    (value.refresh !== 'none' &&
+      value.refresh !== 'labels' &&
+      value.refresh !== 'page' &&
+      value.refresh !== 'thread')
+  ) {
+    return null;
+  }
+  if (value.threadId !== null && !isGmailId(value.threadId)) return null;
+  if (value.refresh === 'thread' && value.threadId === null) return null;
+  return { accountId: value.accountId, refresh: value.refresh, threadId: value.threadId };
+}
+
+export function parseGmailNotificationOpen(value: unknown): GmailNotificationOpen | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['accountId', 'threadId']) ||
+    !isGoogleAccountId(value.accountId) ||
+    !isGmailId(value.threadId)
+  ) {
+    return null;
+  }
+  return { accountId: value.accountId, threadId: value.threadId };
+}
+
+export function parseGmailSyncAccepted(value: unknown): GmailSyncAccepted | null {
+  if (!isRecord(value) || !hasExactKeys(value, ['accepted']) || value.accepted !== true) {
+    return null;
+  }
+  return { accepted: true };
+}
+
 export function unwrapGmailResult<T>(value: unknown, parseValue: (value: unknown) => T | null): T {
   const result = parseGmailResult(value, parseValue);
   if (!result.ok) throw new GmailIpcError(result.error.code);
@@ -816,6 +993,12 @@ export interface GmailBridge {
   createLabel(request: GmailLabelNameRequest): Promise<GmailResult<GmailLabelDefinition>>;
   renameLabel(request: GmailLabelRenameRequest): Promise<GmailResult<GmailLabelDefinition>>;
   deleteLabel(request: GmailLabelDeleteRequest): Promise<GmailResult<GmailLabelDeleted>>;
+  syncStatus(accountId: string): Promise<GmailResult<GmailSyncStatus>>;
+  setNotifications(preference: GmailNotificationPreference): Promise<GmailResult<GmailSyncStatus>>;
+  reportSyncView(view: GmailSyncView): Promise<GmailResult<GmailSyncAccepted>>;
+  syncFocus(accountId: string): Promise<GmailResult<GmailSyncStatus>>;
+  listenSync(listener: (event: GmailSyncChanged) => void): () => void;
+  listenOpen(listener: (event: GmailNotificationOpen) => void): () => void;
 }
 
 export interface GmailApi {
@@ -846,4 +1029,10 @@ export interface GmailApi {
   createLabel(request: GmailLabelNameRequest): Promise<GmailLabelDefinition>;
   renameLabel(request: GmailLabelRenameRequest): Promise<GmailLabelDefinition>;
   deleteLabel(request: GmailLabelDeleteRequest): Promise<GmailLabelDeleted>;
+  syncStatus(accountId: string): Promise<GmailSyncStatus>;
+  setNotifications(preference: GmailNotificationPreference): Promise<GmailSyncStatus>;
+  reportSyncView(view: GmailSyncView): Promise<GmailSyncAccepted>;
+  syncFocus(accountId: string): Promise<GmailSyncStatus>;
+  listenSync(listener: (event: GmailSyncChanged) => void): () => void;
+  listenOpen(listener: (event: GmailNotificationOpen) => void): () => void;
 }
