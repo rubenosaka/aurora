@@ -28,6 +28,7 @@ import {
   GmailIpcError,
   gmailErrorMessage,
   type GmailApi,
+  type GmailBulkResult,
   type GmailErrorCode,
   type GmailLabel,
   type GmailMessage,
@@ -131,6 +132,22 @@ let saveFlight: Promise<boolean> | null = null;
 let trashOpener: HTMLElement | null = null;
 const downloadKey = ref('');
 const pendingDelete = ref(false);
+const selectedIds = ref<string[]>([]);
+const bulkBusy = ref(false);
+const bulkStatus = ref('');
+const bulkTrash = ref(false);
+const labelsDialog = ref(false);
+const labelName = ref('');
+const labelNotice = ref('');
+const labelBusy = ref(false);
+const renameId = ref<string | null>(null);
+const renameName = ref('');
+const deleteLabelTarget = ref<GmailLabel | null>(null);
+const bulkLabelId = ref('');
+const selectAllBox = ref<HTMLInputElement | null>(null);
+const cancelBulkTrashButton = ref<HTMLButtonElement | null>(null);
+const cancelDeleteLabelButton = ref<HTMLButtonElement | null>(null);
+let bulkEpoch = 0;
 
 function google(): GoogleApi {
   return props.googleApi ?? createRendererAppApi(window.aurora).google;
@@ -154,6 +171,13 @@ const selectedAccount = computed(() =>
   accounts.value.find((account) => account.id === accountId.value)
 );
 const userLabels = computed(() => labels.value.filter((label) => label.type === 'user'));
+const selectedCount = computed(() => selectedIds.value.length);
+const allVisibleSelected = computed(
+  () =>
+    threads.value.length > 0 &&
+    threads.value.every((thread) => selectedIds.value.includes(thread.id))
+);
+const someVisibleSelected = computed(() => selectedCount.value > 0 && !allVisibleSelected.value);
 const conversationUnread = computed(() => messages.value.some((item) => item.unread));
 const conversationInInbox = computed(() =>
   messages.value.some((item) => item.labelIds.includes('INBOX'))
@@ -237,6 +261,7 @@ async function loadList(gen: number): Promise<void> {
 }
 
 async function startList(): Promise<void> {
+  invalidateBulk();
   threads.value = [];
   messages.value = [];
   openId.value = null;
@@ -250,6 +275,7 @@ async function startList(): Promise<void> {
 }
 
 async function reloadPage(): Promise<void> {
+  invalidateBulk();
   threads.value = [];
   messages.value = [];
   openId.value = null;
@@ -328,6 +354,7 @@ function showPrevious(): void {
 }
 
 async function openThread(id: string): Promise<void> {
+  invalidateBulk();
   messages.value = [];
   openId.value = id;
   const gen = bump();
@@ -363,6 +390,223 @@ function hasRecipients(item: GmailMessage): boolean {
 
 function canChangeMail(): boolean {
   return selectedAccount.value?.canModifyMail === true;
+}
+
+function invalidateBulk(): void {
+  bulkEpoch += 1;
+  bulkBusy.value = false;
+  selectedIds.value = [];
+  bulkStatus.value = '';
+  bulkTrash.value = false;
+  labelsDialog.value = false;
+  deleteLabelTarget.value = null;
+  renameId.value = null;
+}
+
+function rowSelected(id: string): boolean {
+  return selectedIds.value.includes(id);
+}
+
+function toggleRow(id: string): void {
+  if (bulkBusy.value) return;
+  if (rowSelected(id)) {
+    selectedIds.value = selectedIds.value.filter((item) => item !== id);
+    return;
+  }
+  if (selectedIds.value.length >= 20) return;
+  selectedIds.value = [...selectedIds.value, id];
+}
+
+function toggleAllVisible(): void {
+  if (bulkBusy.value) return;
+  selectedIds.value = allVisibleSelected.value
+    ? []
+    : threads.value.map((thread) => thread.id).slice(0, 20);
+}
+
+function clearSelection(): void {
+  if (bulkBusy.value) return;
+  selectedIds.value = [];
+}
+
+function bulkSummary(result: GmailBulkResult): string {
+  const succeeded = result.succeeded.length;
+  const failed = result.failed.length;
+  const unconfirmed = result.unconfirmed.length;
+  const notAttempted = result.notAttempted.length;
+  if (failed === 0 && unconfirmed === 0 && notAttempted === 0) {
+    return `Updated ${succeeded} conversations.`;
+  }
+  const parts: string[] = [];
+  if (succeeded === 0) parts.push('None of the selected conversations were updated.');
+  else parts.push(`Updated ${succeeded}.`);
+  if (failed > 0) parts.push(`${failed} could not be changed.`);
+  if (unconfirmed > 0) parts.push(`${unconfirmed} could not be confirmed.`);
+  if (notAttempted > 0) parts.push(`${notAttempted} were not attempted.`);
+  return parts.join(' ');
+}
+
+async function refreshAfterBulk(account: string, notice: string): Promise<void> {
+  const gen = bump();
+  try {
+    const listed = await gmail().listLabels(account);
+    if (gen !== generation || account !== accountId.value) return;
+    labels.value = listed.labels;
+    const page = await gmail().listThreads({
+      accountId: account,
+      labelId: activeQuery.value === null ? labelId.value : null,
+      query: activeQuery.value,
+      pageToken: pageTokens.value[pageIndex.value] ?? null
+    });
+    if (gen !== generation || account !== accountId.value) return;
+    threads.value = page.threads;
+    nextPageToken.value = page.nextPageToken;
+    status.value = 'ready';
+    bulkStatus.value = notice;
+  } catch (error) {
+    if (gen !== generation || account !== accountId.value) return;
+    bulkStatus.value = notice;
+    actionNotice.value =
+      error instanceof GmailIpcError ? error.message : gmailErrorMessage('internal');
+  }
+}
+
+async function runBulk(run: (threadIds: string[]) => Promise<GmailBulkResult>): Promise<void> {
+  if (bulkBusy.value || selectedIds.value.length === 0 || !canChangeMail()) return;
+  const account = accountId.value;
+  const threadIds = [...selectedIds.value];
+  const epoch = bulkEpoch;
+  bulkBusy.value = true;
+  bulkStatus.value = '';
+  actionNotice.value = '';
+  try {
+    const result = await run(threadIds);
+    if (epoch !== bulkEpoch || account !== accountId.value) return;
+    const notice = bulkSummary(result);
+    selectedIds.value = [];
+    await refreshAfterBulk(account, notice);
+  } catch (error) {
+    if (epoch !== bulkEpoch || account !== accountId.value) return;
+    actionNotice.value =
+      error instanceof GmailIpcError ? error.message : gmailErrorMessage('internal');
+  } finally {
+    if (epoch === bulkEpoch) bulkBusy.value = false;
+  }
+}
+
+function bulkThreads(
+  action: 'read' | 'unread' | 'archive' | 'trash' | 'untrash' | 'star' | 'unstar'
+): void {
+  void runBulk((threadIds) =>
+    gmail().bulkThreads({ accountId: accountId.value, threadIds, action })
+  );
+}
+
+function confirmBulkTrash(): void {
+  bulkTrash.value = false;
+  bulkThreads('trash');
+}
+
+function bulkUserLabel(mode: 'add' | 'remove'): void {
+  const labelIdValue = bulkLabelId.value;
+  if (labelIdValue.length === 0) return;
+  void runBulk((threadIds) =>
+    gmail().bulkLabel({
+      accountId: accountId.value,
+      threadIds,
+      labelId: labelIdValue,
+      mode
+    })
+  );
+}
+
+function openLabelDialog(): void {
+  labelNotice.value = '';
+  labelsDialog.value = true;
+}
+
+async function refreshLabelList(account: string): Promise<void> {
+  const listed = await gmail().listLabels(account);
+  if (account !== accountId.value) return;
+  labels.value = listed.labels;
+  if (!listed.labels.some((label) => label.id === bulkLabelId.value)) bulkLabelId.value = '';
+}
+
+async function createUserLabel(): Promise<void> {
+  if (labelBusy.value) return;
+  const account = accountId.value;
+  labelBusy.value = true;
+  labelNotice.value = '';
+  try {
+    const created = await gmail().createLabel({ accountId: account, name: labelName.value });
+    if (account !== accountId.value) return;
+    labelName.value = '';
+    labelNotice.value = `Created ${created.name}.`;
+    await refreshLabelList(account);
+  } catch (error) {
+    if (account !== accountId.value) return;
+    labelNotice.value =
+      error instanceof GmailIpcError ? error.message : gmailErrorMessage('internal');
+  } finally {
+    labelBusy.value = false;
+  }
+}
+
+function startRename(label: GmailLabel): void {
+  renameId.value = label.id;
+  renameName.value = label.name;
+}
+
+async function renameUserLabel(label: GmailLabel): Promise<void> {
+  if (labelBusy.value) return;
+  const account = accountId.value;
+  labelBusy.value = true;
+  labelNotice.value = '';
+  try {
+    const renamed = await gmail().renameLabel({
+      accountId: account,
+      labelId: label.id,
+      name: renameName.value
+    });
+    if (account !== accountId.value) return;
+    renameId.value = null;
+    labelNotice.value = `Renamed ${renamed.name}.`;
+    await refreshLabelList(account);
+  } catch (error) {
+    if (account !== accountId.value) return;
+    labelNotice.value =
+      error instanceof GmailIpcError ? error.message : gmailErrorMessage('internal');
+  } finally {
+    labelBusy.value = false;
+  }
+}
+
+async function confirmDeleteLabel(): Promise<void> {
+  const label = deleteLabelTarget.value;
+  deleteLabelTarget.value = null;
+  if (label === null || labelBusy.value) return;
+  const account = accountId.value;
+  labelBusy.value = true;
+  labelNotice.value = '';
+  try {
+    await gmail().deleteLabel({ accountId: account, labelId: label.id });
+    if (account !== accountId.value) return;
+    labelNotice.value = `Deleted ${label.name}.`;
+    if (labelId.value === label.id && activeQuery.value === null) {
+      labelsDialog.value = false;
+      labelId.value = 'INBOX';
+      resetPages();
+      await startList();
+      return;
+    }
+    await refreshLabelList(account);
+  } catch (error) {
+    if (account !== accountId.value) return;
+    labelNotice.value =
+      error instanceof GmailIpcError ? error.message : gmailErrorMessage('internal');
+  } finally {
+    labelBusy.value = false;
+  }
 }
 
 function threadBusy(threadId: string): boolean {
@@ -1474,6 +1718,24 @@ watch(trashTarget, (value) => {
   });
 });
 
+watch([someVisibleSelected, selectAllBox], () => {
+  if (selectAllBox.value !== null) selectAllBox.value.indeterminate = someVisibleSelected.value;
+});
+
+watch(bulkTrash, (value) => {
+  if (!value) return;
+  void nextTick(() => {
+    cancelBulkTrashButton.value?.focus();
+  });
+});
+
+watch(deleteLabelTarget, (value) => {
+  if (value === null) return;
+  void nextTick(() => {
+    cancelDeleteLabelButton.value?.focus();
+  });
+});
+
 function onHtmlClick(event: MouseEvent): void {
   if (!(event.target instanceof Element)) return;
   const anchor = event.target.closest('a');
@@ -1500,7 +1762,7 @@ onMounted(() => {
   window.addEventListener('beforeunload', warnBeforeUnload);
   void google()
     .listAccounts()
-    .then((list) => {
+    .then(async (list) => {
       accounts.value = list.accounts;
       const first = list.accounts.find((account) => account.status === 'connected');
       if (first === undefined) {
@@ -1508,7 +1770,7 @@ onMounted(() => {
         return;
       }
       accountId.value = first.id;
-      return startList();
+      await startList();
     })
     .catch((error: unknown) => {
       fail(error);
@@ -1615,6 +1877,17 @@ onUnmounted(() => {
               }}</span>
             </button>
           </nav>
+          <button
+            v-if="canChangeMail()"
+            class="control mail-labels-button"
+            type="button"
+            aria-label="Labels"
+            :disabled="status === 'loading' || labelBusy"
+            @click="openLabelDialog"
+          >
+            <Tag :size="16" :stroke-width="1.75" aria-hidden="true" />
+            <span class="mail-labels-name">Labels</span>
+          </button>
         </div>
         <div class="mail-stage">
           <StatusPanel
@@ -1642,6 +1915,137 @@ onUnmounted(() => {
             <p v-if="activeQuery !== null" class="text-sm text-muted" role="status">
               Search results
             </p>
+            <div v-if="canChangeMail()" class="mail-select-bar">
+              <label class="mail-check">
+                <input
+                  ref="selectAllBox"
+                  type="checkbox"
+                  :checked="allVisibleSelected"
+                  :aria-checked="
+                    someVisibleSelected ? 'mixed' : allVisibleSelected ? 'true' : 'false'
+                  "
+                  aria-label="Select all visible conversations"
+                  :disabled="threads.length === 0 || bulkBusy"
+                  @change="toggleAllVisible"
+                />
+              </label>
+              <span v-if="selectedCount > 0">{{ selectedCount }} selected</span>
+              <button
+                v-if="selectedCount > 0"
+                class="control"
+                type="button"
+                :disabled="bulkBusy"
+                @click="clearSelection"
+              >
+                Clear selection
+              </button>
+            </div>
+            <div
+              v-if="canChangeMail() && selectedCount > 0"
+              class="mail-bulk"
+              :aria-busy="bulkBusy ? 'true' : undefined"
+            >
+              <button
+                class="control"
+                type="button"
+                :disabled="bulkBusy"
+                @click="bulkThreads('read')"
+              >
+                Mark as read
+              </button>
+              <button
+                class="control"
+                type="button"
+                :disabled="bulkBusy"
+                @click="bulkThreads('unread')"
+              >
+                Mark as unread
+              </button>
+              <button
+                v-if="labelId === 'INBOX' || activeQuery !== null"
+                class="control"
+                type="button"
+                :disabled="bulkBusy"
+                @click="bulkThreads('archive')"
+              >
+                Archive
+              </button>
+              <button
+                v-if="labelId === 'TRASH'"
+                class="control"
+                type="button"
+                :disabled="bulkBusy"
+                @click="bulkThreads('untrash')"
+              >
+                Restore
+              </button>
+              <button
+                v-if="labelId !== 'TRASH'"
+                class="control control-danger"
+                type="button"
+                :disabled="bulkBusy"
+                @click="bulkTrash = true"
+              >
+                Move to Trash
+              </button>
+              <button
+                class="control"
+                type="button"
+                :disabled="bulkBusy"
+                aria-describedby="bulk-star-note"
+                @click="bulkThreads('star')"
+              >
+                Star
+              </button>
+              <button
+                class="control"
+                type="button"
+                :disabled="bulkBusy"
+                aria-describedby="bulk-star-note"
+                @click="bulkThreads('unstar')"
+              >
+                Unstar
+              </button>
+              <p id="bulk-star-note" class="text-sm text-muted">
+                Star marks only the newest message in each conversation. Unstar removes the star
+                from messages that already have one, up to 50 per conversation. A conversation with
+                more starred messages is not reported as fully updated.
+              </p>
+              <label v-if="userLabels.length > 0" class="mail-bulk-label">
+                Label
+                <select
+                  id="bulk-label"
+                  v-model="bulkLabelId"
+                  class="field field-select"
+                  :disabled="bulkBusy"
+                >
+                  <option value="">Choose a label</option>
+                  <option v-for="label in userLabels" :key="label.id" :value="label.id">
+                    {{ label.name }}
+                  </option>
+                </select>
+              </label>
+              <button
+                v-if="userLabels.length > 0"
+                class="control"
+                type="button"
+                :disabled="bulkBusy || bulkLabelId.length === 0"
+                @click="bulkUserLabel('add')"
+              >
+                Add
+              </button>
+              <button
+                v-if="userLabels.length > 0"
+                class="control"
+                type="button"
+                :disabled="bulkBusy || bulkLabelId.length === 0"
+                @click="bulkUserLabel('remove')"
+              >
+                Remove
+              </button>
+              <p v-else class="text-sm text-muted">No labels. Open Labels to create one.</p>
+            </div>
+            <p v-if="bulkStatus" role="status">{{ bulkStatus }}</p>
             <StatusPanel
               v-if="threads.length === 0"
               kind="empty"
@@ -1650,7 +2054,21 @@ onUnmounted(() => {
             />
             <div v-else class="mail-list">
               <ul class="mail-rows">
-                <li v-for="thread in threads" :key="thread.id" class="mail-row-line">
+                <li
+                  v-for="thread in threads"
+                  :key="thread.id"
+                  class="mail-row-line"
+                  :class="{ 'has-select': canChangeMail() }"
+                >
+                  <label v-if="canChangeMail()" class="mail-check">
+                    <input
+                      type="checkbox"
+                      :checked="rowSelected(thread.id)"
+                      :aria-label="`Select ${thread.subject ?? '(no subject)'}`"
+                      :disabled="bulkBusy"
+                      @change="toggleRow(thread.id)"
+                    />
+                  </label>
                   <button
                     class="mail-row"
                     :class="{ 'is-unread': thread.unread }"
@@ -1690,7 +2108,7 @@ onUnmounted(() => {
                       class="control"
                       type="button"
                       :aria-label="thread.unread ? 'Mark as read' : 'Mark as unread'"
-                      :disabled="threadBusy(thread.id)"
+                      :disabled="threadBusy(thread.id) || bulkBusy"
                       @click="changeRead(thread.id, !thread.unread)"
                     >
                       <MailOpen
@@ -1706,7 +2124,7 @@ onUnmounted(() => {
                       class="control"
                       type="button"
                       aria-label="Restore"
-                      :disabled="threadBusy(thread.id)"
+                      :disabled="threadBusy(thread.id) || bulkBusy"
                       @click="restoreConversation(thread.id)"
                     >
                       <RotateCcw :size="16" :stroke-width="1.75" aria-hidden="true" />
@@ -1716,7 +2134,7 @@ onUnmounted(() => {
                       class="control"
                       type="button"
                       aria-label="Archive"
-                      :disabled="threadBusy(thread.id)"
+                      :disabled="threadBusy(thread.id) || bulkBusy"
                       @click="archiveConversation(thread.id)"
                     >
                       <Archive :size="16" :stroke-width="1.75" aria-hidden="true" />
@@ -1726,7 +2144,7 @@ onUnmounted(() => {
                       class="control control-danger"
                       type="button"
                       aria-label="Move to Trash"
-                      :disabled="threadBusy(thread.id)"
+                      :disabled="threadBusy(thread.id) || bulkBusy"
                       @click="askTrash(thread.id, $event)"
                     >
                       <Trash2 :size="16" :stroke-width="1.75" aria-hidden="true" />
@@ -1947,6 +2365,109 @@ onUnmounted(() => {
         </article>
       </div>
     </template>
+    <div
+      v-if="bulkTrash"
+      class="mail-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="bulk-trash-title"
+      @keydown.esc="bulkTrash = false"
+    >
+      <h2 id="bulk-trash-title">Move {{ selectedCount }} conversations to Trash?</h2>
+      <p>You can restore these conversations from Trash.</p>
+      <button ref="cancelBulkTrashButton" class="control" type="button" @click="bulkTrash = false">
+        Cancel
+      </button>
+      <button class="control control-danger" type="button" @click="confirmBulkTrash">
+        Move to Trash
+      </button>
+    </div>
+    <div
+      v-if="labelsDialog"
+      class="mail-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="labels-title"
+      @keydown.esc="labelsDialog = false"
+    >
+      <h2 id="labels-title">Labels</h2>
+      <p v-if="labelNotice" role="status">{{ labelNotice }}</p>
+      <label for="new-label">Name</label>
+      <input
+        id="new-label"
+        v-model="labelName"
+        class="field field-text"
+        type="text"
+        maxlength="225"
+        aria-label="Label name"
+        :disabled="labelBusy"
+      />
+      <button class="control" type="button" :disabled="labelBusy" @click="createUserLabel">
+        Create
+      </button>
+      <ul class="mail-label-editor">
+        <li v-for="label in userLabels" :key="label.id">
+          <span>{{ label.name }}</span>
+          <template v-if="renameId === label.id">
+            <input
+              v-model="renameName"
+              class="field field-text"
+              type="text"
+              maxlength="225"
+              :aria-label="`New name for ${label.name}`"
+              :disabled="labelBusy"
+            />
+            <button
+              class="control"
+              type="button"
+              :disabled="labelBusy"
+              @click="renameUserLabel(label)"
+            >
+              Rename
+            </button>
+            <button class="control" type="button" :disabled="labelBusy" @click="renameId = null">
+              Cancel
+            </button>
+          </template>
+          <template v-else>
+            <button class="control" type="button" :disabled="labelBusy" @click="startRename(label)">
+              Rename
+            </button>
+            <button
+              class="control control-danger"
+              type="button"
+              :disabled="labelBusy"
+              @click="deleteLabelTarget = label"
+            >
+              Delete
+            </button>
+          </template>
+        </li>
+      </ul>
+      <button class="control" type="button" @click="labelsDialog = false">Close</button>
+    </div>
+    <div
+      v-if="deleteLabelTarget !== null"
+      class="mail-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="delete-label-title"
+      @keydown.esc="deleteLabelTarget = null"
+    >
+      <h2 id="delete-label-title">Delete {{ deleteLabelTarget.name }}?</h2>
+      <p>Gmail will remove this label from every conversation. Messages stay in Gmail.</p>
+      <button
+        ref="cancelDeleteLabelButton"
+        class="control"
+        type="button"
+        @click="deleteLabelTarget = null"
+      >
+        Cancel
+      </button>
+      <button class="control control-danger" type="button" @click="confirmDeleteLabel">
+        Delete label
+      </button>
+    </div>
     <div
       v-if="trashTarget !== null"
       class="mail-dialog"

@@ -5,6 +5,11 @@ import {
   gmailAttachmentDownloadChannel,
   gmailAttachmentDropChannel,
   gmailAttachmentPickChannel,
+  gmailBulkLabelChannel,
+  gmailBulkThreadsChannel,
+  gmailLabelCreateChannel,
+  gmailLabelDeleteChannel,
+  gmailLabelRenameChannel,
   gmailDraftDeleteChannel,
   gmailDraftOpenChannel,
   gmailDraftSaveChannel,
@@ -62,7 +67,12 @@ describe('createAuroraApi', () => {
       'sendDraft',
       'pickAttachments',
       'dropAttachment',
-      'downloadAttachment'
+      'downloadAttachment',
+      'bulkThreads',
+      'bulkLabel',
+      'createLabel',
+      'renameLabel',
+      'deleteLabel'
     ]);
     assert.equal(Object.isFrozen(api), true);
     assert.equal(Object.isFrozen(api.app), true);
@@ -257,6 +267,21 @@ describe('createAuroraApi', () => {
       if (channel === gmailAttachmentPickChannel) return { ok: true, value: { attachments: [] } };
       if (channel === gmailAttachmentDropChannel) return { ok: true, value: { dropped: true } };
       if (channel === gmailAttachmentDownloadChannel) return { ok: true, value: { saved: false } };
+      if (channel === gmailBulkThreadsChannel || channel === gmailBulkLabelChannel) {
+        return {
+          ok: true,
+          value: {
+            succeeded: ['threadsame'],
+            failed: [],
+            unconfirmed: [],
+            notAttempted: []
+          }
+        };
+      }
+      if (channel === gmailLabelCreateChannel || channel === gmailLabelRenameChannel) {
+        return { ok: true, value: { id: 'Label_1', name: 'Trips' } };
+      }
+      if (channel === gmailLabelDeleteChannel) return { ok: true, value: { id: 'Label_1' } };
       return { ok: false, error: { code: 'internal' } };
     });
     const save = {
@@ -332,6 +357,29 @@ describe('createAuroraApi', () => {
       ).ok,
       true
     );
+    const bulk = {
+      accountId,
+      threadIds: ['threadsame'],
+      action: 'read' as const
+    };
+    assert.equal((await drafts.gmail.bulkThreads(bulk)).ok, true);
+    assert.equal(
+      (
+        await drafts.gmail.bulkLabel({
+          accountId,
+          threadIds: ['threadsame'],
+          labelId: 'Label_1',
+          mode: 'add' as const
+        })
+      ).ok,
+      true
+    );
+    assert.equal((await drafts.gmail.createLabel({ accountId, name: 'Trips' })).ok, true);
+    assert.equal(
+      (await drafts.gmail.renameLabel({ accountId, labelId: 'Label_1', name: 'Travel' })).ok,
+      true
+    );
+    assert.equal((await drafts.gmail.deleteLabel({ accountId, labelId: 'Label_1' })).ok, true);
   });
 
   it('rejects an invalid IPC result envelope', async () => {

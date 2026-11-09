@@ -42,7 +42,12 @@ function gmail(): GmailBridge {
     sendDraft: async () => ({ ok: false, error: { code: 'internal' } }),
     pickAttachments: async () => ({ ok: false, error: { code: 'internal' } }),
     dropAttachment: async () => ({ ok: false, error: { code: 'internal' } }),
-    downloadAttachment: async () => ({ ok: false, error: { code: 'internal' } })
+    downloadAttachment: async () => ({ ok: false, error: { code: 'internal' } }),
+    bulkThreads: async () => ({ ok: false, error: { code: 'internal' } }),
+    bulkLabel: async () => ({ ok: false, error: { code: 'internal' } }),
+    createLabel: async () => ({ ok: false, error: { code: 'internal' } }),
+    renameLabel: async () => ({ ok: false, error: { code: 'internal' } }),
+    deleteLabel: async () => ({ ok: false, error: { code: 'internal' } })
   };
 }
 

@@ -1,19 +1,30 @@
 import { flushPromises, mount } from '@vue/test-utils';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GmailIpcError, type GmailApi, type GmailThreadList } from '../../../../shared/gmail.ts';
 import { type GoogleAccountSummary, type GoogleApi } from '../../../../shared/google-accounts.ts';
 import { createAppRouter } from '../../app/router.ts';
 import MailView from './MailView.vue';
 
+const closeMail: Array<() => void> = [];
+
 function mountMail(options?: Parameters<typeof mount>[1]) {
-  return mount(MailView, {
+  const wrapper = mount(MailView, {
     ...options,
     global: {
       ...options?.global,
       plugins: [createAppRouter(), ...(options?.global?.plugins ?? [])]
     }
   });
+  closeMail.push(() => {
+    wrapper.unmount();
+  });
+  return wrapper;
 }
+
+afterEach(() => {
+  for (const close of closeMail) close();
+  closeMail.length = 0;
+});
 
 const ada: GoogleAccountSummary = {
   id: '00000000-0000-4000-8000-000000000001',
@@ -51,6 +62,11 @@ function mailActions(): Pick<
   | 'pickAttachments'
   | 'dropAttachment'
   | 'downloadAttachment'
+  | 'bulkThreads'
+  | 'bulkLabel'
+  | 'createLabel'
+  | 'renameLabel'
+  | 'deleteLabel'
 > {
   return {
     markRead: async () => ({ threadId: 'threadsame', unread: false }),
@@ -91,7 +107,22 @@ function mailActions(): Pick<
     sendDraft: async () => ({ id: 'messagesent', threadId: 'threadsame' }),
     pickAttachments: async () => ({ attachments: [] }),
     dropAttachment: async () => ({ dropped: true as const }),
-    downloadAttachment: async () => ({ saved: true })
+    downloadAttachment: async () => ({ saved: true }),
+    bulkThreads: async () => ({
+      succeeded: ['threadsame'],
+      failed: [],
+      unconfirmed: [],
+      notAttempted: []
+    }),
+    bulkLabel: async () => ({
+      succeeded: ['threadsame'],
+      failed: [],
+      unconfirmed: [],
+      notAttempted: []
+    }),
+    createLabel: async () => ({ id: 'Label_1', name: 'Trips' }),
+    renameLabel: async () => ({ id: 'Label_1', name: 'Travel' }),
+    deleteLabel: async () => ({ id: 'Label_1' })
   };
 }
 
@@ -1088,5 +1119,115 @@ describe('MailView', () => {
     await flushPromises();
     expect(deletes).toBe(1);
     expect(again.find('[aria-labelledby="compose-title"]').exists()).toBe(false);
+  });
+
+  it('selects only the visible page and reports a partial bulk result', async () => {
+    const threads = [
+      {
+        id: 'threadone',
+        subject: 'Hello',
+        from: 'Ada',
+        date: '2026-11-02T12:00:00.000Z',
+        snippet: 'Hi',
+        unread: true,
+        starred: false
+      },
+      {
+        id: 'threadtwo',
+        subject: 'Next',
+        from: 'Grace',
+        date: '2026-11-02T12:00:00.000Z',
+        snippet: 'There',
+        unread: false,
+        starred: true
+      }
+    ];
+    let page = 0;
+    const bulkCalls: string[][] = [];
+    let releaseBulk:
+      | ((value: {
+          succeeded: string[];
+          failed: { threadId: string; code: 'not-found' }[];
+          unconfirmed: string[];
+          notAttempted: string[];
+        }) => void)
+      | undefined;
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => ({
+        labels: [
+          { id: 'INBOX', name: 'INBOX', type: 'system', unreadCount: 1 },
+          { id: 'Label_1', name: 'Trips', type: 'user', unreadCount: 0 }
+        ]
+      }),
+      listThreads: async () => ({
+        threads: page === 0 ? threads : threads.slice(1),
+        nextPageToken: page === 0 ? 'page-2' : null
+      }),
+      readThread: async () => ({ id: 'threadone', messages: [] }),
+      openLink: async () => ({ opened: true }),
+      bulkThreads: (request) => {
+        bulkCalls.push(request.threadIds);
+        return new Promise((resolve) => {
+          releaseBulk = resolve;
+        });
+      },
+      createLabel: async () => ({ id: 'Label_2', name: 'Travel' })
+    };
+    const wrapper = mountMail({ props: { googleApi: accountsApi([ada, grace]), gmailApi } });
+    await flushPromises();
+    expect(wrapper.find('[aria-label="Select all visible conversations"]').exists()).toBe(true);
+    const hello = wrapper.get('[aria-label="Select Hello"]');
+    expect(hello.element.closest('.mail-row')).toBeNull();
+    await hello.setValue(true);
+    expect(wrapper.text()).toContain('1 selected');
+    expect(
+      (wrapper.get('[aria-label="Select all visible conversations"]').element as HTMLInputElement)
+        .indeterminate
+    ).toBe(true);
+    await wrapper.get('[aria-label="Select all visible conversations"]').setValue(true);
+    expect(wrapper.text()).toContain('2 selected');
+    expect(wrapper.text()).toContain('Star marks only the newest message');
+    page = 1;
+    const next = wrapper.findAll('button').find((button) => button.text() === 'Next');
+    await next?.trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('selected');
+    await wrapper.get('[aria-label="Select Next"]').setValue(true);
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'Mark as read')
+      ?.trigger('click');
+    expect(bulkCalls).toEqual([['threadtwo']]);
+    const account = wrapper.get('[aria-label="Google account"]');
+    await account.setValue(grace.id);
+    releaseBulk?.({
+      succeeded: ['threadtwo'],
+      failed: [],
+      unconfirmed: [],
+      notAttempted: []
+    });
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('Updated 1 conversations.');
+    wrapper.unmount();
+
+    const readonly: GmailApi = {
+      ...gmailApi,
+      bulkThreads: async () => ({
+        succeeded: [],
+        failed: [],
+        unconfirmed: [],
+        notAttempted: []
+      })
+    };
+    const quiet = mountMail({
+      props: {
+        googleApi: accountsApi([{ ...ada, canModifyMail: false }]),
+        gmailApi: readonly
+      }
+    });
+    await flushPromises();
+    expect(quiet.find('button[aria-label="Labels"]').exists()).toBe(false);
+    expect(quiet.find('[aria-label="Select all visible conversations"]').exists()).toBe(false);
   });
 });

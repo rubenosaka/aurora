@@ -33,6 +33,11 @@ export const gmailAddLabelChannel = 'gmail:add-label';
 export const gmailRemoveLabelChannel = 'gmail:remove-label';
 export const gmailStarMessageChannel = 'gmail:star-message';
 export const gmailUnstarMessageChannel = 'gmail:unstar-message';
+export const gmailBulkThreadsChannel = 'gmail:bulk-threads';
+export const gmailBulkLabelChannel = 'gmail:bulk-label';
+export const gmailLabelCreateChannel = 'gmail:label-create';
+export const gmailLabelRenameChannel = 'gmail:label-rename';
+export const gmailLabelDeleteChannel = 'gmail:label-delete';
 export const gmailComposeSeedChannel = 'gmail:compose-seed';
 export const gmailSendMessageChannel = 'gmail:send-message';
 export const gmailDraftSaveChannel = 'gmail:draft-save';
@@ -57,6 +62,11 @@ export const gmailChannels = [
   gmailRemoveLabelChannel,
   gmailStarMessageChannel,
   gmailUnstarMessageChannel,
+  gmailBulkThreadsChannel,
+  gmailBulkLabelChannel,
+  gmailLabelCreateChannel,
+  gmailLabelRenameChannel,
+  gmailLabelDeleteChannel,
   gmailComposeSeedChannel,
   gmailSendMessageChannel,
   gmailDraftSaveChannel,
@@ -88,6 +98,7 @@ export const gmailErrorCodes = [
   'send-unconfirmed',
   'save-unconfirmed',
   'draft-conflict',
+  'label-exists',
   'internal'
 ] as const;
 
@@ -116,6 +127,7 @@ const messages: Record<GmailErrorCode, string> = {
   'save-unconfirmed':
     'Aurora could not confirm whether Gmail saved this draft. Check Drafts before saving it again.',
   'draft-conflict': 'This draft changed in Gmail. Aurora did not overwrite it.',
+  'label-exists': 'A label with this name already exists.',
   internal: 'Request failed.'
 };
 
@@ -213,6 +225,68 @@ export interface GmailStarChanged {
   threadId: string;
   messageId: string;
   starred: boolean;
+}
+
+export const gmailBulkActions = [
+  'read',
+  'unread',
+  'archive',
+  'trash',
+  'untrash',
+  'star',
+  'unstar'
+] as const;
+
+export type GmailBulkAction = (typeof gmailBulkActions)[number];
+
+export interface GmailBulkThreadsRequest {
+  accountId: string;
+  threadIds: string[];
+  action: GmailBulkAction;
+}
+
+export interface GmailBulkLabelRequest {
+  accountId: string;
+  threadIds: string[];
+  labelId: string;
+  mode: 'add' | 'remove';
+}
+
+export interface GmailBulkFailure {
+  threadId: string;
+  code: GmailErrorCode;
+}
+
+export interface GmailBulkResult {
+  succeeded: string[];
+  failed: GmailBulkFailure[];
+  unconfirmed: string[];
+  notAttempted: string[];
+}
+
+export interface GmailLabelNameRequest {
+  accountId: string;
+  name: string;
+}
+
+export interface GmailLabelRenameRequest {
+  accountId: string;
+  labelId: string;
+  name: string;
+}
+
+export interface GmailLabelDeleteRequest {
+  accountId: string;
+  labelId: string;
+}
+
+export interface GmailLabelDefinition {
+  id: string;
+  name: string;
+}
+
+export interface GmailLabelDeleted {
+  id: string;
 }
 
 export interface GmailThreadQuery {
@@ -514,6 +588,162 @@ export function parseGmailStarChanged(value: unknown): GmailStarChanged | null {
   return { threadId: value.threadId, messageId: value.messageId, starred: value.starred };
 }
 
+function isBulkAction(value: unknown): value is GmailBulkAction {
+  return typeof value === 'string' && gmailBulkActions.some((action) => action === value);
+}
+
+function parseThreadIds(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 20) return null;
+  const seen = new Set<string>();
+  const threadIds: string[] = [];
+  for (const item of value) {
+    if (!isGmailId(item) || seen.has(item)) return null;
+    seen.add(item);
+    threadIds.push(item);
+  }
+  return threadIds;
+}
+
+function parseLabelName(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 225) return null;
+  if (hasControlCharacter(value)) return null;
+  return value;
+}
+
+function parseIdList(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > 20) return null;
+  const ids: string[] = [];
+  for (const item of value) {
+    if (!isGmailId(item)) return null;
+    ids.push(item);
+  }
+  return ids;
+}
+
+export function parseGmailBulkThreads(value: unknown): GmailBulkThreadsRequest | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['accountId', 'threadIds', 'action']) ||
+    !isGoogleAccountId(value.accountId) ||
+    !isBulkAction(value.action)
+  ) {
+    return null;
+  }
+  const threadIds = parseThreadIds(value.threadIds);
+  if (threadIds === null) return null;
+  return { accountId: value.accountId, threadIds, action: value.action };
+}
+
+export function parseGmailBulkLabel(value: unknown): GmailBulkLabelRequest | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['accountId', 'threadIds', 'labelId', 'mode']) ||
+    !isGoogleAccountId(value.accountId) ||
+    !isGmailId(value.labelId) ||
+    (value.mode !== 'add' && value.mode !== 'remove')
+  ) {
+    return null;
+  }
+  const threadIds = parseThreadIds(value.threadIds);
+  if (threadIds === null) return null;
+  return {
+    accountId: value.accountId,
+    threadIds,
+    labelId: value.labelId,
+    mode: value.mode
+  };
+}
+
+export function parseGmailBulkResult(value: unknown): GmailBulkResult | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['succeeded', 'failed', 'unconfirmed', 'notAttempted']) ||
+    !Array.isArray(value.failed)
+  ) {
+    return null;
+  }
+  const succeeded = parseIdList(value.succeeded);
+  const unconfirmed = parseIdList(value.unconfirmed);
+  const notAttempted = parseIdList(value.notAttempted);
+  if (succeeded === null || unconfirmed === null || notAttempted === null) return null;
+  if (value.failed.length > 20) return null;
+  const failed: GmailBulkFailure[] = [];
+  for (const item of value.failed) {
+    if (
+      !isRecord(item) ||
+      !hasExactKeys(item, ['threadId', 'code']) ||
+      !isGmailId(item.threadId) ||
+      !isGmailErrorCode(item.code)
+    ) {
+      return null;
+    }
+    failed.push({ threadId: item.threadId, code: item.code });
+  }
+  const seen = new Set<string>();
+  for (const threadId of [
+    ...succeeded,
+    ...failed.map((item) => item.threadId),
+    ...unconfirmed,
+    ...notAttempted
+  ]) {
+    if (seen.has(threadId)) return null;
+    seen.add(threadId);
+  }
+  if (seen.size > 20) return null;
+  return { succeeded, failed, unconfirmed, notAttempted };
+}
+
+export function parseGmailLabelName(value: unknown): GmailLabelNameRequest | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['accountId', 'name']) ||
+    !isGoogleAccountId(value.accountId)
+  ) {
+    return null;
+  }
+  const name = parseLabelName(value.name);
+  if (name === null) return null;
+  return { accountId: value.accountId, name };
+}
+
+export function parseGmailLabelRename(value: unknown): GmailLabelRenameRequest | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['accountId', 'labelId', 'name']) ||
+    !isGoogleAccountId(value.accountId) ||
+    !isGmailId(value.labelId)
+  ) {
+    return null;
+  }
+  const name = parseLabelName(value.name);
+  if (name === null) return null;
+  return { accountId: value.accountId, labelId: value.labelId, name };
+}
+
+export function parseGmailLabelDelete(value: unknown): GmailLabelDeleteRequest | null {
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, ['accountId', 'labelId']) ||
+    !isGoogleAccountId(value.accountId) ||
+    !isGmailId(value.labelId)
+  ) {
+    return null;
+  }
+  return { accountId: value.accountId, labelId: value.labelId };
+}
+
+export function parseGmailLabelDefinition(value: unknown): GmailLabelDefinition | null {
+  if (!isRecord(value) || !hasExactKeys(value, ['id', 'name']) || !isGmailId(value.id)) return null;
+  const name = boundedText(value.name, 256);
+  if (name === undefined || name === null) return null;
+  return { id: value.id, name };
+}
+
+export function parseGmailLabelDeleted(value: unknown): GmailLabelDeleted | null {
+  if (!isRecord(value) || !hasExactKeys(value, ['id']) || !isGmailId(value.id)) return null;
+  return { id: value.id };
+}
+
 export function parseGmailThreadQuery(value: unknown): GmailThreadQuery | null {
   if (
     !isRecord(value) ||
@@ -581,6 +811,11 @@ export interface GmailBridge {
   pickAttachments(request: AttachmentPickRequest): Promise<GmailResult<PickedAttachments>>;
   dropAttachment(request: AttachmentDropRequest): Promise<GmailResult<AttachmentDropped>>;
   downloadAttachment(request: AttachmentDownloadRequest): Promise<GmailResult<AttachmentSaved>>;
+  bulkThreads(request: GmailBulkThreadsRequest): Promise<GmailResult<GmailBulkResult>>;
+  bulkLabel(request: GmailBulkLabelRequest): Promise<GmailResult<GmailBulkResult>>;
+  createLabel(request: GmailLabelNameRequest): Promise<GmailResult<GmailLabelDefinition>>;
+  renameLabel(request: GmailLabelRenameRequest): Promise<GmailResult<GmailLabelDefinition>>;
+  deleteLabel(request: GmailLabelDeleteRequest): Promise<GmailResult<GmailLabelDeleted>>;
 }
 
 export interface GmailApi {
@@ -606,4 +841,9 @@ export interface GmailApi {
   pickAttachments(request: AttachmentPickRequest): Promise<PickedAttachments>;
   dropAttachment(request: AttachmentDropRequest): Promise<AttachmentDropped>;
   downloadAttachment(request: AttachmentDownloadRequest): Promise<AttachmentSaved>;
+  bulkThreads(request: GmailBulkThreadsRequest): Promise<GmailBulkResult>;
+  bulkLabel(request: GmailBulkLabelRequest): Promise<GmailBulkResult>;
+  createLabel(request: GmailLabelNameRequest): Promise<GmailLabelDefinition>;
+  renameLabel(request: GmailLabelRenameRequest): Promise<GmailLabelDefinition>;
+  deleteLabel(request: GmailLabelDeleteRequest): Promise<GmailLabelDeleted>;
 }

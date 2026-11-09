@@ -15,6 +15,7 @@ export const gmailServiceCodes = [
   'send-unconfirmed',
   'save-unconfirmed',
   'draft-conflict',
+  'label-exists',
   'internal'
 ] as const;
 
@@ -39,6 +40,7 @@ const sentences: Record<GmailServiceCode, string> = {
   'save-unconfirmed':
     'Aurora could not confirm whether Gmail saved this draft. Check Drafts before saving it again.',
   'draft-conflict': 'This draft changed in Gmail. Aurora did not overwrite it.',
+  'label-exists': 'A label with this name already exists.',
   internal: 'Request failed.'
 };
 

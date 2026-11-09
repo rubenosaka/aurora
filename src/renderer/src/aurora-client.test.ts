@@ -39,6 +39,11 @@ function pendingMail(): Pick<
   | 'pickAttachments'
   | 'dropAttachment'
   | 'downloadAttachment'
+  | 'bulkThreads'
+  | 'bulkLabel'
+  | 'createLabel'
+  | 'renameLabel'
+  | 'deleteLabel'
 > {
   const denied = async (): Promise<{ ok: false; error: { code: 'internal' } }> => ({
     ok: false,
@@ -62,7 +67,12 @@ function pendingMail(): Pick<
     sendDraft: denied,
     pickAttachments: denied,
     dropAttachment: denied,
-    downloadAttachment: denied
+    downloadAttachment: denied,
+    bulkThreads: denied,
+    bulkLabel: denied,
+    createLabel: denied,
+    renameLabel: denied,
+    deleteLabel: denied
   };
 }
 
@@ -342,6 +352,31 @@ describe('createRendererAppApi', () => {
         partId: null,
         attachmentId: 'attachone'
       }),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.bulkThreads({ accountId, threadIds: ['threadsame'], action: 'read' }),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.bulkLabel({
+        accountId,
+        threadIds: ['threadsame'],
+        labelId: 'Label_1',
+        mode: 'add'
+      }),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.createLabel({ accountId, name: 'Trips' }),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.renameLabel({ accountId, labelId: 'Label_1', name: 'Travel' }),
+      (error: unknown) => error instanceof GmailIpcError
+    );
+    await assert.rejects(
+      api.gmail.deleteLabel({ accountId, labelId: 'Label_1' }),
       (error: unknown) => error instanceof GmailIpcError
     );
   });

@@ -183,6 +183,63 @@
   border-bottom: 1px solid var(--aurora-border);
 }
 
+.mail-row-line.has-select {
+  grid-template-columns: 40px minmax(0, 1fr) 112px;
+}
+
+.mail-select-bar,
+.mail-bulk,
+.mail-check,
+.mail-bulk-label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.mail-select-bar,
+.mail-bulk {
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.mail-check {
+  justify-content: center;
+  min-width: 40px;
+  min-height: 40px;
+}
+
+.mail-check input:focus-visible {
+  outline: 2px solid var(--aurora-accent);
+  outline-offset: 2px;
+}
+
+.mail-bulk-label {
+  font-size: 14px;
+}
+
+.mail-labels-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+
+.mail-label-editor {
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.mail-label-editor li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
 .mail-row-line:has(.mail-row:hover) {
   background: var(--aurora-surface);
 }
@@ -521,6 +578,13 @@
     display: inline-flex;
   }
 
+  .mail-workspace:not(.is-folders-open) .mail-labels-button {
+    width: 40px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .mail-workspace:not(.is-folders-open) .mail-labels-name,
   .mail-workspace:not(.is-folders-open) .folder-name,
   .mail-workspace:not(.is-folders-open) .folder-count {
     position: absolute;

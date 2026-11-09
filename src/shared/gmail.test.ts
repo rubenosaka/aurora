@@ -4,6 +4,8 @@ import {
   GmailIpcError,
   gmailErrorCodes,
   gmailErrorMessage,
+  parseGmailBulkResult,
+  parseGmailBulkThreads,
   parseGmailLabelList,
   parseGmailOpenedLink,
   parseGmailResult,
@@ -16,6 +18,25 @@ import {
 describe('gmail contracts', () => {
   it('accepts a label list and rejects an extra field', () => {
     assert.equal(gmailErrorMessage('too-large'), 'This conversation is too large to show.');
+    assert.equal(gmailErrorMessage('label-exists'), 'A label with this name already exists.');
+    assert.equal(
+      parseGmailBulkThreads({
+        accountId: '00000000-0000-4000-8000-000000000001',
+        threadIds: ['threadsame', 'threadsame'],
+        action: 'read'
+      }),
+      null
+    );
+    assert.equal(
+      parseGmailBulkResult({
+        succeeded: ['threadsame'],
+        failed: [],
+        unconfirmed: [],
+        notAttempted: [],
+        access_token: 'access-a'
+      }),
+      null
+    );
     const labels = parseGmailLabelList({
       labels: [{ id: 'INBOX', name: 'INBOX', type: 'system', unreadCount: 1 }]
     });

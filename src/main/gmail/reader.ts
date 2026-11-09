@@ -1,4 +1,16 @@
-import { type GmailLabel, type GmailMessage, type GmailThreadSummary } from '../../shared/gmail.ts';
+import {
+  type GmailBulkLabelRequest,
+  type GmailBulkResult,
+  type GmailBulkThreadsRequest,
+  type GmailLabel,
+  type GmailLabelDefinition,
+  type GmailLabelDeleteRequest,
+  type GmailLabelDeleted,
+  type GmailLabelNameRequest,
+  type GmailLabelRenameRequest,
+  type GmailMessage,
+  type GmailThreadSummary
+} from '../../shared/gmail.ts';
 import { isGmailId, isGmailPageToken } from '../../shared/gmail.ts';
 import { isGoogleAccountId } from '../../shared/google-accounts.ts';
 import {
@@ -19,6 +31,7 @@ import {
 import { OAuthFlowError } from '../oauth/errors.ts';
 import { type GoogleAccountService } from '../oauth/google-accounts.ts';
 import { PersistenceError } from '../persistence/errors.ts';
+import { createBulkActions } from './bulk-actions.ts';
 import { buildOutgoingRaw } from './compose-mime.ts';
 import { createDraftActions } from './draft-actions.ts';
 import { GmailError } from './errors.ts';
@@ -116,6 +129,11 @@ export interface GmailReader {
   pickAttachments(request: AttachmentPickRequest): Promise<PickedAttachments>;
   dropAttachment(request: AttachmentDropRequest): Promise<{ dropped: true }>;
   downloadAttachment(request: AttachmentDownloadRequest): Promise<{ saved: boolean }>;
+  bulkThreads(request: GmailBulkThreadsRequest): Promise<GmailBulkResult>;
+  bulkLabel(request: GmailBulkLabelRequest): Promise<GmailBulkResult>;
+  createLabel(request: GmailLabelNameRequest): Promise<GmailLabelDefinition>;
+  renameLabel(request: GmailLabelRenameRequest): Promise<GmailLabelDefinition>;
+  deleteLabel(request: GmailLabelDeleteRequest): Promise<GmailLabelDeleted>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -409,6 +427,7 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
     deps.sleep ??
     ((milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
   const busyThreads = new Set<string>();
+  const busyBulk = new Set<string>();
   const busySends = new Set<string>();
 
   async function gmailJson(
@@ -523,6 +542,22 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
     guard(value, listPayloadLimit);
     return labels;
   }
+
+  const bulk = createBulkActions({
+    authed: (accountId, url, request) => authed(accountId, url, request),
+    withRead,
+    requireGrant,
+    reserveThread: reserve,
+    threadBusy: (accountId, threadId) => busyThreads.has(`${accountId}\n${threadId}`),
+    bulkBusy: (accountId) => busyBulk.has(accountId),
+    reserveBulk: (accountId) => {
+      busyBulk.add(accountId);
+      return () => {
+        busyBulk.delete(accountId);
+      };
+    },
+    normalizeError: asGmail
+  });
 
   const drafts = createDraftActions({
     authed,
@@ -669,6 +704,21 @@ export function createGmailReader(deps: GmailReaderDependencies): GmailReader {
     },
     downloadAttachment(request) {
       return drafts.downloadAttachment(request);
+    },
+    bulkThreads(request) {
+      return bulk.bulkThreads(request);
+    },
+    bulkLabel(request) {
+      return bulk.bulkLabel(request);
+    },
+    createLabel(request) {
+      return bulk.createLabel(request);
+    },
+    renameLabel(request) {
+      return bulk.renameLabel(request);
+    },
+    deleteLabel(request) {
+      return bulk.deleteLabel(request);
     }
   };
 

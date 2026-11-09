@@ -9,7 +9,12 @@ import {
   gmailAttachmentDownloadChannel,
   gmailAttachmentDropChannel,
   gmailAttachmentPickChannel,
+  gmailBulkLabelChannel,
+  gmailBulkThreadsChannel,
   gmailDraftDeleteChannel,
+  gmailLabelCreateChannel,
+  gmailLabelDeleteChannel,
+  gmailLabelRenameChannel,
   gmailDraftOpenChannel,
   gmailDraftSaveChannel,
   gmailDraftSendChannel,
@@ -84,6 +89,21 @@ function reader(overrides: Partial<GmailReader> = {}): GmailReader {
     pickAttachments: async () => ({ attachments: [] }),
     dropAttachment: async () => ({ dropped: true as const }),
     downloadAttachment: async () => ({ saved: true }),
+    bulkThreads: async () => ({
+      succeeded: ['threadsame'],
+      failed: [],
+      unconfirmed: [],
+      notAttempted: []
+    }),
+    bulkLabel: async () => ({
+      succeeded: ['threadsame'],
+      failed: [],
+      unconfirmed: [],
+      notAttempted: []
+    }),
+    createLabel: async () => ({ id: 'Label_1', name: 'Trips' }),
+    renameLabel: async () => ({ id: 'Label_1', name: 'Travel' }),
+    deleteLabel: async () => ({ id: 'Label_1' }),
     ...overrides
   };
 }
@@ -369,6 +389,116 @@ describe('gmail ipc', () => {
         reader()
       ),
       { ok: false, error: { code: 'invalid-request' } }
+    );
+    let bulkCalls = 0;
+    const bulkReader = reader({
+      bulkThreads: async () => {
+        bulkCalls += 1;
+        return {
+          succeeded: ['threadsame'],
+          failed: [],
+          unconfirmed: [],
+          notAttempted: [],
+          access_token: 'access-a'
+        } as unknown as Awaited<ReturnType<GmailReader['bulkThreads']>>;
+      }
+    });
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailBulkThreadsChannel,
+        sender(),
+        [{ accountId, threadIds: ['threadsame'], action: 'read', extra: true }],
+        bulkReader
+      ),
+      { ok: false, error: { code: 'invalid-request' } }
+    );
+    assert.equal(bulkCalls, 0);
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailBulkThreadsChannel,
+        sender(),
+        [
+          {
+            accountId,
+            threadIds: Array.from({ length: 21 }, (_, index) => `thread${index}`),
+            action: 'read'
+          }
+        ],
+        bulkReader
+      ),
+      { ok: false, error: { code: 'invalid-request' } }
+    );
+    const leaked = await handleGmailChannel(
+      gmailBulkThreadsChannel,
+      sender(),
+      [{ accountId, threadIds: ['threadsame'], action: 'read' }],
+      bulkReader
+    );
+    assert.deepEqual(leaked, { ok: false, error: { code: 'invalid-response' } });
+    assert.equal(JSON.stringify(leaked).includes('access-a'), false);
+    const empty = {
+      succeeded: ['threadsame'],
+      failed: [],
+      unconfirmed: [],
+      notAttempted: []
+    };
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailBulkThreadsChannel,
+        sender(),
+        [{ accountId, threadIds: ['threadsame'], action: 'read' }],
+        reader()
+      ),
+      { ok: true, value: empty }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailBulkLabelChannel,
+        sender(),
+        [{ accountId, threadIds: ['threadsame'], labelId: 'Label_1', mode: 'remove' }],
+        reader()
+      ),
+      { ok: true, value: empty }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailLabelCreateChannel,
+        sender(),
+        [{ accountId, name: 'Trips' }],
+        reader()
+      ),
+      { ok: true, value: { id: 'Label_1', name: 'Trips' } }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailLabelRenameChannel,
+        sender(),
+        [{ accountId, labelId: 'Label_1', name: 'Travel' }],
+        reader()
+      ),
+      { ok: true, value: { id: 'Label_1', name: 'Travel' } }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailLabelDeleteChannel,
+        sender(),
+        [{ accountId, labelId: 'Label_1' }],
+        reader()
+      ),
+      { ok: true, value: { id: 'Label_1' } }
+    );
+    assert.deepEqual(
+      await handleGmailChannel(
+        gmailLabelCreateChannel,
+        sender(),
+        [{ accountId, name: 'Trips' }],
+        reader({
+          createLabel: async () => {
+            throw new GmailError('label-exists');
+          }
+        })
+      ),
+      { ok: false, error: { code: 'label-exists' } }
     );
   });
 });

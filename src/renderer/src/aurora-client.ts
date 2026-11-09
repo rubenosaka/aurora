@@ -7,7 +7,10 @@ import {
 import {
   GmailIpcError,
   unwrapGmailResult,
+  parseGmailBulkResult,
   parseGmailLabelChanged,
+  parseGmailLabelDefinition,
+  parseGmailLabelDeleted,
   parseGmailLabelList,
   parseGmailOpenedLink,
   parseGmailReadState,
@@ -15,6 +18,11 @@ import {
   parseGmailThread,
   parseGmailThreadChanged,
   parseGmailThreadList,
+  type GmailBulkLabelRequest,
+  type GmailBulkThreadsRequest,
+  type GmailLabelDeleteRequest,
+  type GmailLabelNameRequest,
+  type GmailLabelRenameRequest,
   type GmailThreadQuery
 } from '../../shared/gmail.ts';
 import {
@@ -240,6 +248,21 @@ export function createRendererAppApi(bridge: AuroraBridge): AuroraApi {
       },
       downloadAttachment(request: AttachmentDownloadRequest) {
         return readGmail(bridge.gmail.downloadAttachment(request), parseAttachmentSaved);
+      },
+      bulkThreads(request: GmailBulkThreadsRequest) {
+        return readGmail(bridge.gmail.bulkThreads(request), parseGmailBulkResult);
+      },
+      bulkLabel(request: GmailBulkLabelRequest) {
+        return readGmail(bridge.gmail.bulkLabel(request), parseGmailBulkResult);
+      },
+      createLabel(request: GmailLabelNameRequest) {
+        return readGmail(bridge.gmail.createLabel(request), parseGmailLabelDefinition);
+      },
+      renameLabel(request: GmailLabelRenameRequest) {
+        return readGmail(bridge.gmail.renameLabel(request), parseGmailLabelDefinition);
+      },
+      deleteLabel(request: GmailLabelDeleteRequest) {
+        return readGmail(bridge.gmail.deleteLabel(request), parseGmailLabelDeleted);
       }
     })
   });

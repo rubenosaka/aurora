@@ -6,6 +6,8 @@ import { isGoogleAccountId } from '../shared/google-accounts.ts';
 import {
   gmailAddLabelChannel,
   gmailArchiveThreadChannel,
+  gmailBulkLabelChannel,
+  gmailBulkThreadsChannel,
   gmailAttachmentDownloadChannel,
   gmailAttachmentDropChannel,
   gmailAttachmentPickChannel,
@@ -15,6 +17,9 @@ import {
   gmailDraftOpenChannel,
   gmailDraftSaveChannel,
   gmailDraftSendChannel,
+  gmailLabelCreateChannel,
+  gmailLabelDeleteChannel,
+  gmailLabelRenameChannel,
   gmailLabelsChannel,
   gmailMarkReadChannel,
   gmailMarkUnreadChannel,
@@ -28,8 +33,16 @@ import {
   gmailUnstarMessageChannel,
   gmailUntrashThreadChannel,
   isGmailId,
+  parseGmailBulkLabel,
+  parseGmailBulkResult,
+  parseGmailBulkThreads,
   parseGmailLabelChanged,
+  parseGmailLabelDefinition,
+  parseGmailLabelDelete,
+  parseGmailLabelDeleted,
   parseGmailLabelList,
+  parseGmailLabelName,
+  parseGmailLabelRename,
   parseGmailOpenedLink,
   parseGmailReadState,
   parseGmailStarChanged,
@@ -78,7 +91,10 @@ type GmailIpcValue =
   | Awaited<ReturnType<GmailReader['sendDraft']>>
   | Awaited<ReturnType<GmailReader['pickAttachments']>>
   | Awaited<ReturnType<GmailReader['dropAttachment']>>
-  | Awaited<ReturnType<GmailReader['downloadAttachment']>>;
+  | Awaited<ReturnType<GmailReader['downloadAttachment']>>
+  | Awaited<ReturnType<GmailReader['bulkThreads']>>
+  | Awaited<ReturnType<GmailReader['createLabel']>>
+  | Awaited<ReturnType<GmailReader['deleteLabel']>>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -324,6 +340,48 @@ export async function handleGmailChannel(
       if (request === null) return rejected('invalid-request');
       const value = await reader.downloadAttachment(request);
       if (parseAttachmentSaved(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailBulkThreadsChannel || channel === gmailBulkLabelChannel) {
+      if (args.length !== 1) return rejected('invalid-request');
+      const request =
+        channel === gmailBulkThreadsChannel
+          ? parseGmailBulkThreads(args[0])
+          : parseGmailBulkLabel(args[0]);
+      if (request === null) return rejected('invalid-request');
+      const value =
+        'action' in request ? await reader.bulkThreads(request) : await reader.bulkLabel(request);
+      if (parseGmailBulkResult(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailLabelCreateChannel) {
+      if (args.length !== 1 || parseGmailLabelName(args[0]) === null) {
+        return rejected('invalid-request');
+      }
+      const request = parseGmailLabelName(args[0]);
+      if (request === null) return rejected('invalid-request');
+      const value = await reader.createLabel(request);
+      if (parseGmailLabelDefinition(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailLabelRenameChannel) {
+      if (args.length !== 1 || parseGmailLabelRename(args[0]) === null) {
+        return rejected('invalid-request');
+      }
+      const request = parseGmailLabelRename(args[0]);
+      if (request === null) return rejected('invalid-request');
+      const value = await reader.renameLabel(request);
+      if (parseGmailLabelDefinition(value) === null) return rejected('invalid-response');
+      return { ok: true, value };
+    }
+    if (channel === gmailLabelDeleteChannel) {
+      if (args.length !== 1 || parseGmailLabelDelete(args[0]) === null) {
+        return rejected('invalid-request');
+      }
+      const request = parseGmailLabelDelete(args[0]);
+      if (request === null) return rejected('invalid-request');
+      const value = await reader.deleteLabel(request);
+      if (parseGmailLabelDeleted(value) === null) return rejected('invalid-response');
       return { ok: true, value };
     }
     if (channel === gmailOpenLinkChannel) {

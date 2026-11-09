@@ -11,7 +11,12 @@ import {
   gmailAttachmentDownloadChannel,
   gmailAttachmentDropChannel,
   gmailAttachmentPickChannel,
+  gmailBulkLabelChannel,
+  gmailBulkThreadsChannel,
   gmailComposeSeedChannel,
+  gmailLabelCreateChannel,
+  gmailLabelDeleteChannel,
+  gmailLabelRenameChannel,
   gmailDraftDeleteChannel,
   gmailDraftOpenChannel,
   gmailDraftSaveChannel,
@@ -28,7 +33,10 @@ import {
   gmailTrashThreadChannel,
   gmailUnstarMessageChannel,
   gmailUntrashThreadChannel,
+  parseGmailBulkResult,
   parseGmailLabelChanged,
+  parseGmailLabelDefinition,
+  parseGmailLabelDeleted,
   parseGmailLabelList,
   parseGmailOpenedLink,
   parseGmailReadState,
@@ -37,8 +45,16 @@ import {
   parseGmailThread,
   parseGmailThreadChanged,
   parseGmailThreadList,
+  type GmailBulkLabelRequest,
+  type GmailBulkResult,
+  type GmailBulkThreadsRequest,
   type GmailLabelChanged,
+  type GmailLabelDefinition,
+  type GmailLabelDeleteRequest,
+  type GmailLabelDeleted,
   type GmailLabelList,
+  type GmailLabelNameRequest,
+  type GmailLabelRenameRequest,
   type GmailOpenedLink,
   type GmailReadState,
   type GmailResult,
@@ -318,6 +334,21 @@ export function createAuroraApi(invoke: AuroraInvoke): AuroraBridge {
       },
       downloadAttachment(request: AttachmentDownloadRequest) {
         return gmailAction(invoke, gmailAttachmentDownloadChannel, request, parseAttachmentSaved);
+      },
+      bulkThreads(request: GmailBulkThreadsRequest): Promise<GmailResult<GmailBulkResult>> {
+        return gmailAction(invoke, gmailBulkThreadsChannel, request, parseGmailBulkResult);
+      },
+      bulkLabel(request: GmailBulkLabelRequest): Promise<GmailResult<GmailBulkResult>> {
+        return gmailAction(invoke, gmailBulkLabelChannel, request, parseGmailBulkResult);
+      },
+      createLabel(request: GmailLabelNameRequest): Promise<GmailResult<GmailLabelDefinition>> {
+        return gmailAction(invoke, gmailLabelCreateChannel, request, parseGmailLabelDefinition);
+      },
+      renameLabel(request: GmailLabelRenameRequest): Promise<GmailResult<GmailLabelDefinition>> {
+        return gmailAction(invoke, gmailLabelRenameChannel, request, parseGmailLabelDefinition);
+      },
+      deleteLabel(request: GmailLabelDeleteRequest): Promise<GmailResult<GmailLabelDeleted>> {
+        return gmailAction(invoke, gmailLabelDeleteChannel, request, parseGmailLabelDeleted);
       }
     })
   });
