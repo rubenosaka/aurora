@@ -300,6 +300,11 @@ function absorb(impact: Impact, record: HistoryRecord): void {
   for (const change of record.labelsRemoved) noteMessage(impact, change.message, change.labelIds);
 }
 
+function pageEventThreadId(view: GmailSyncView, impact: Impact): string | null {
+  if (view.threadId !== null && impact.threads.has(view.threadId)) return view.threadId;
+  return null;
+}
+
 function refreshFor(
   view: GmailSyncView | null,
   accountId: string,
@@ -315,15 +320,15 @@ function refreshFor(
       : { accountId, refresh: 'thread', threadId: view.threadId };
   }
   if (view.threadId !== null && impact.threads.has(view.threadId)) {
-    return { accountId, refresh: 'thread', threadId: view.threadId };
+    return { accountId, refresh: 'thread', threadId: pageEventThreadId(view, impact) };
   }
   if (view.query !== null && impact.threads.size > 0) {
-    return { accountId, refresh: 'page', threadId: view.threadId };
+    return { accountId, refresh: 'page', threadId: pageEventThreadId(view, impact) };
   }
   const folder = view.labelId;
   const folderHit =
     folder !== null && (impact.labels.has(folder) || impact.folderLabels.has(folder));
-  if (folderHit) return { accountId, refresh: 'page', threadId: view.threadId };
+  if (folderHit) return { accountId, refresh: 'page', threadId: pageEventThreadId(view, impact) };
   if (impact.labels.size > 0 || impact.threads.size > 0) {
     return { accountId, refresh: 'labels', threadId: null };
   }

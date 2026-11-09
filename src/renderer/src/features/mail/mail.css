@@ -5,10 +5,26 @@
   max-width: 100%;
   flex: 1;
   flex-direction: column;
-  gap: 16px;
   overflow: hidden;
   container-name: mail-screen;
   container-type: inline-size;
+}
+
+.mail-content {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
+  overflow: hidden;
+}
+
+.mail-backdrop {
+  position: fixed;
+  z-index: 30;
+  inset: 0;
+  background: color-mix(in srgb, var(--aurora-text) 28%, transparent);
 }
 
 .mail-toolbar {
@@ -424,7 +440,7 @@
 
 .mail-dialog {
   position: fixed;
-  z-index: 20;
+  z-index: 40;
   top: 50%;
   left: 50%;
   display: grid;
@@ -437,12 +453,11 @@
   transform: translate(-50%, -50%);
 }
 
-.mail-confirm {
-  z-index: 40;
+.mail-dialog[data-mail-modal='inactive'] {
+  z-index: 20;
 }
 
 .mail-composer {
-  z-index: 30;
   width: min(560px, calc(100% - 32px));
   max-height: calc(100% - 32px);
   overflow: auto;

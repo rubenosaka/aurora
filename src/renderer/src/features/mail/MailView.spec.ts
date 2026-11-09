@@ -11,6 +11,7 @@ const closeMail: Array<() => void> = [];
 function mountMail(options?: Parameters<typeof mount>[1]) {
   const wrapper = mount(MailView, {
     ...options,
+    attachTo: document.body,
     global: {
       ...options?.global,
       plugins: [createAppRouter(), ...(options?.global?.plugins ?? [])]
@@ -1337,5 +1338,396 @@ describe('MailView', () => {
     await flushPromises();
     expect(reads).toEqual(['threadsame']);
     pendingMailOpen.value = null;
+  });
+
+  it('traps Trash confirmation focus, blocks the screen, and restores the opener', async () => {
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => labels,
+      listThreads: async () => ({
+        threads: [
+          {
+            id: 'threadsame',
+            subject: 'Hello',
+            from: 'Ada',
+            date: '2026-11-02T12:00:00.000Z',
+            snippet: 'Hi',
+            unread: true,
+            starred: false
+          }
+        ],
+        nextPageToken: null
+      }),
+      readThread: async () => ({ id: 'threadsame', messages: [] }),
+      openLink: async () => ({ opened: true })
+    };
+    const wrapper = mountMail({ props: { googleApi: accountsApi([ada]), gmailApi } });
+    await flushPromises();
+    const opener = wrapper.get('[aria-label="Move to Trash"]');
+    await opener.trigger('click');
+    await flushPromises();
+    const dialog = wrapper.get('[aria-labelledby="trash-title"]');
+    expect(dialog.attributes('aria-modal')).toBe('true');
+    expect(wrapper.find('.mail-backdrop').exists()).toBe(true);
+    expect(wrapper.find('.mail-content[inert]').exists()).toBe(true);
+    const buttons = dialog.findAll('button');
+    expect(document.activeElement).toBe(buttons[0]?.element);
+    buttons[0]?.element.focus();
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true, cancelable: true })
+    );
+    expect(document.activeElement).toBe(buttons[1]?.element);
+    await wrapper.get('.mail-backdrop').trigger('click');
+    expect(wrapper.find('[aria-labelledby="trash-title"]').exists()).toBe(true);
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+    await flushPromises();
+    expect(wrapper.find('[aria-labelledby="trash-title"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(opener.element);
+  });
+
+  it('replaces the label editor with its delete confirmation', async () => {
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => ({
+        labels: [
+          { id: 'INBOX', name: 'INBOX', type: 'system' as const, unreadCount: 0 },
+          { id: 'Label_1', name: 'Trips', type: 'user' as const, unreadCount: 0 }
+        ]
+      }),
+      listThreads: async () => ({ threads: [], nextPageToken: null }),
+      readThread: async () => ({ id: 'threadsame', messages: [] }),
+      openLink: async () => ({ opened: true })
+    };
+    const wrapper = mountMail({ props: { googleApi: accountsApi([ada]), gmailApi } });
+    await flushPromises();
+    await wrapper.get('button[aria-label="Labels"]').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('#new-label').exists()).toBe(true);
+    await wrapper.get('#delete-label-Label_1').trigger('click');
+    await flushPromises();
+    expect(wrapper.find('#new-label').exists()).toBe(false);
+    expect(wrapper.text()).toContain('Delete Trips?');
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+    await flushPromises();
+    expect(wrapper.find('#new-label').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain('Delete Trips?');
+    expect(document.activeElement).toBe(wrapper.get('#delete-label-Label_1').element);
+  });
+
+  it('closes the label menu from the keyboard and still toggles a label', async () => {
+    const calls: string[] = [];
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => ({
+        labels: [
+          { id: 'INBOX', name: 'INBOX', type: 'system' as const, unreadCount: 0 },
+          { id: 'Label_1', name: 'Trips', type: 'user' as const, unreadCount: 0 }
+        ]
+      }),
+      listThreads: async () => ({
+        threads: [
+          {
+            id: 'threadsame',
+            subject: 'Hello',
+            from: 'Ada',
+            date: '2026-11-02T12:00:00.000Z',
+            snippet: 'Hi',
+            unread: false,
+            starred: false
+          }
+        ],
+        nextPageToken: null
+      }),
+      readThread: async () => ({
+        id: 'threadsame',
+        messages: [
+          {
+            id: 'messageone',
+            from: 'Ada',
+            to: null,
+            cc: null,
+            bcc: null,
+            subject: 'Hello',
+            date: '2026-11-02T12:00:00.000Z',
+            unread: false,
+            starred: false,
+            labelIds: ['INBOX'],
+            text: 'Hello',
+            html: null,
+            imagesOmitted: false,
+            attachments: []
+          }
+        ]
+      }),
+      addLabel: async () => {
+        calls.push('add');
+        return { threadId: 'threadsame', labelId: 'Label_1' };
+      },
+      removeLabel: async () => {
+        calls.push('remove');
+        return { threadId: 'threadsame', labelId: 'Label_1' };
+      },
+      openLink: async () => ({ opened: true })
+    };
+    const wrapper = mountMail({ props: { googleApi: accountsApi([ada]), gmailApi } });
+    await flushPromises();
+    await wrapper.get('.mail-row').trigger('click');
+    await flushPromises();
+    const menuButton = wrapper.get('.conversation-actions').get('button');
+    const labelsButton = wrapper
+      .get('.conversation-actions')
+      .findAll('button')
+      .find((button) => button.text().includes('Labels'));
+    await labelsButton?.trigger('click');
+    const menu = wrapper.get('[role="group"][aria-label="Labels"]');
+    expect(wrapper.find('[role="listbox"]').exists()).toBe(false);
+    expect(wrapper.find('[role="option"]').exists()).toBe(false);
+    const labelButton = menu.get('button');
+    expect(labelButton.attributes('aria-pressed')).toBe('false');
+    await labelButton.trigger('keydown', { key: 'Enter' });
+    await flushPromises();
+    expect(calls).toEqual(['add']);
+    await labelButton.trigger('keydown', { key: ' ' });
+    await flushPromises();
+    expect(calls).toEqual(['add', 'remove']);
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
+    );
+    await flushPromises();
+    expect(wrapper.find('[role="group"][aria-label="Labels"]').exists()).toBe(false);
+    expect(document.activeElement).toBe(labelsButton?.element ?? menuButton.element);
+  });
+
+  it('opens a notification in Inbox and asks before leaving an unsaved message', async () => {
+    const folders: Array<string | null> = [];
+    const reads: string[] = [];
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => ({
+        labels: [
+          { id: 'INBOX', name: 'Inbox', type: 'system' as const, unreadCount: 1 },
+          { id: 'TRASH', name: 'Trash', type: 'system' as const, unreadCount: 0 }
+        ]
+      }),
+      listThreads: async (query) => {
+        folders.push(query.labelId);
+        return { threads: [], nextPageToken: null };
+      },
+      readThread: async (_accountId, threadId) => {
+        reads.push(threadId);
+        return { id: threadId, messages: [] };
+      },
+      openLink: async () => ({ opened: true })
+    };
+    const wrapper = mountMail({ props: { googleApi: accountsApi([ada]), gmailApi } });
+    await flushPromises();
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('Trash'))
+      ?.trigger('click');
+    await flushPromises();
+    pendingMailOpen.value = { accountId: ada.id, threadId: 'threadsame' };
+    await flushPromises();
+    expect(reads).toEqual(['threadsame']);
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'Back')
+      ?.trigger('click');
+    await flushPromises();
+    expect(
+      wrapper
+        .findAll('button')
+        .find((button) => button.text().includes('Inbox'))
+        ?.attributes('aria-pressed')
+    ).toBe('true');
+    await wrapper.get('.mail-toolbar button').trigger('click');
+    await wrapper.get('[aria-label="Message"]').setValue('Unsent');
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('Trash'))
+      ?.trigger('click');
+    await flushPromises();
+    const before = reads.length;
+    pendingMailOpen.value = { accountId: ada.id, threadId: 'threadother' };
+    await flushPromises();
+    expect(wrapper.text()).toContain('Discard this message?');
+    expect(reads.length).toBe(before);
+    expect(
+      wrapper
+        .findAll('button')
+        .find((button) => button.text().includes('Trash'))
+        ?.attributes('aria-pressed')
+    ).toBe('true');
+    expect(wrapper.find('[aria-label="Message"]').exists()).toBe(true);
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'Keep editing')
+      ?.trigger('click');
+    expect(wrapper.get('[aria-label="Message"]').element).toHaveProperty('value', 'Unsent');
+    expect(reads.length).toBe(before);
+    pendingMailOpen.value = { accountId: ada.id, threadId: 'threadother' };
+    await flushPromises();
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'Discard')
+      ?.trigger('click');
+    await flushPromises();
+    expect(reads).toContain('threadother');
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'Back')
+      ?.trigger('click');
+    await flushPromises();
+    expect(
+      wrapper
+        .findAll('.folder-button')
+        .find((button) => button.text().includes('Inbox'))
+        ?.attributes('aria-pressed')
+    ).toBe('true');
+    expect(folders).toContain('INBOX');
+    expect(folders).toContain('TRASH');
+  });
+
+  it('keeps the visible rows when a sync refresh fails and does not invent notification settings', async () => {
+    let lists = 0;
+    let failStatus = false;
+    let syncListener: ((event: unknown) => void) | undefined;
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => labels,
+      listThreads: async () => {
+        lists += 1;
+        if (lists === 2) throw new GmailIpcError('network');
+        return {
+          threads: [
+            {
+              id: 'threadsame',
+              subject: 'Hello',
+              from: 'Ada',
+              date: '2026-11-02T12:00:00.000Z',
+              snippet: 'Hi',
+              unread: true,
+              starred: false
+            }
+          ],
+          nextPageToken: null
+        };
+      },
+      readThread: async () => ({ id: 'threadsame', messages: [] }),
+      openLink: async () => ({ opened: true }),
+      syncStatus: async () => {
+        if (failStatus) throw new GmailIpcError('network');
+        return {
+          state: 'idle' as const,
+          lastSuccessAt: '2026-11-09T10:00:00.000Z',
+          notifications: 'off' as const,
+          content: 'hide' as const,
+          pending: false,
+          notificationsBlocked: false
+        };
+      },
+      listenSync: (listener) => {
+        syncListener = listener as (event: unknown) => void;
+        return () => undefined;
+      }
+    };
+    const wrapper = mountMail({ props: { googleApi: accountsApi([ada]), gmailApi } });
+    await flushPromises();
+    expect(wrapper.get('[aria-label="Notify me of new mail"]').element).toHaveProperty(
+      'checked',
+      false
+    );
+    expect(wrapper.text()).toContain('Hello');
+    syncListener?.({ accountId: ada.id, refresh: 'page', threadId: null });
+    await flushPromises();
+    expect(wrapper.text()).toContain('Hello');
+    expect(wrapper.text()).toContain('Aurora could not reach Google.');
+    expect(wrapper.text()).not.toContain('Updated');
+    failStatus = true;
+    syncListener?.({ accountId: ada.id, refresh: 'none', threadId: null });
+    await flushPromises();
+    expect(wrapper.get('[aria-label="Notify me of new mail"]').element).toHaveProperty(
+      'checked',
+      false
+    );
+    expect(wrapper.get('[aria-label="Show sender and subject"]').element).toHaveProperty(
+      'checked',
+      false
+    );
+    expect(wrapper.text()).toContain('Hello');
+    expect(wrapper.text()).toContain('Updated');
+    expect(wrapper.text()).not.toContain('Aurora could not reach Google.');
+  });
+
+  it('leaves notification controls off when their status never loads', async () => {
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => labels,
+      listThreads: async () => ({ threads: [], nextPageToken: null }),
+      readThread: async () => ({ id: 'threadsame', messages: [] }),
+      openLink: async () => ({ opened: true }),
+      syncStatus: async () => {
+        throw new GmailIpcError('network');
+      }
+    };
+    const wrapper = mountMail({ props: { googleApi: accountsApi([ada]), gmailApi } });
+    await flushPromises();
+    expect(wrapper.text()).toContain('Aurora could not reach Google.');
+    const notifications = wrapper.get('[aria-label="Notify me of new mail"]');
+    const content = wrapper.get('[aria-label="Show sender and subject"]');
+    expect(notifications.element).toHaveProperty('disabled', true);
+    expect(notifications.element).toHaveProperty('checked', false);
+    expect(content.element).toHaveProperty('disabled', true);
+    expect(content.element).toHaveProperty('checked', false);
+  });
+
+  it('reloads an open conversation only when the sync event names it', async () => {
+    const reads: string[] = [];
+    let syncListener: ((event: unknown) => void) | undefined;
+    const gmailApi: GmailApi = {
+      ...mailActions(),
+      listLabels: async () => labels,
+      listThreads: async () => ({
+        threads: [
+          {
+            id: 'threadsame',
+            subject: 'Hello',
+            from: 'Ada',
+            date: '2026-11-02T12:00:00.000Z',
+            snippet: 'Hi',
+            unread: true,
+            starred: false
+          }
+        ],
+        nextPageToken: null
+      }),
+      readThread: async (_accountId, threadId) => {
+        reads.push(threadId);
+        return { id: threadId, messages: [] };
+      },
+      openLink: async () => ({ opened: true }),
+      listenSync: (listener) => {
+        syncListener = listener as (event: unknown) => void;
+        return () => undefined;
+      }
+    };
+    const wrapper = mountMail({ props: { googleApi: accountsApi([ada]), gmailApi } });
+    await flushPromises();
+    await wrapper.get('.mail-row').trigger('click');
+    await flushPromises();
+    expect(reads).toEqual(['threadsame']);
+    syncListener?.({ accountId: ada.id, refresh: 'page', threadId: null });
+    await flushPromises();
+    expect(reads).toEqual(['threadsame']);
+    syncListener?.({ accountId: ada.id, refresh: 'page', threadId: 'threadsame' });
+    await flushPromises();
+    expect(reads).toEqual(['threadsame', 'threadsame']);
+    syncListener?.({ accountId: ada.id, refresh: 'thread', threadId: 'threadsame' });
+    await flushPromises();
+    expect(reads).toEqual(['threadsame', 'threadsame', 'threadsame']);
   });
 });

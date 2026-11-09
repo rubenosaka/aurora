@@ -138,7 +138,6 @@ let generation = 0;
 let composeEpoch = 0;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let saveFlight: Promise<boolean> | null = null;
-let trashOpener: HTMLElement | null = null;
 const downloadKey = ref('');
 const pendingDelete = ref(false);
 const selectedIds = ref<string[]>([]);
@@ -156,7 +155,32 @@ const bulkLabelId = ref('');
 const selectAllBox = ref<HTMLInputElement | null>(null);
 const cancelBulkTrashButton = ref<HTMLButtonElement | null>(null);
 const cancelDeleteLabelButton = ref<HTMLButtonElement | null>(null);
+const labelNameInput = ref<HTMLInputElement | null>(null);
+const keepDraftButton = ref<HTMLButtonElement | null>(null);
+const conversationLabelsButton = ref<HTMLButtonElement | null>(null);
+const visibleStale = ref(false);
+const syncStatusFailed = ref(false);
+const modalOpeners: HTMLElement[] = [];
+let discardOpener: HTMLElement | null = null;
+let deleteDraftOpener: HTMLElement | null = null;
+let deleteLabelReturnId: string | null = null;
+let refreshMessage = '';
+let visibleRecovery: Promise<void> | null = null;
 let bulkEpoch = 0;
+
+type MailModal =
+  'discard' | 'delete-draft' | 'delete-label' | 'trash' | 'bulk-trash' | 'labels' | 'compose';
+
+const activeModal = computed<MailModal | null>(() => {
+  if (pendingDiscard.value !== null) return 'discard';
+  if (pendingDelete.value && compose.value !== null) return 'delete-draft';
+  if (deleteLabelTarget.value !== null) return 'delete-label';
+  if (trashTarget.value !== null) return 'trash';
+  if (bulkTrash.value) return 'bulk-trash';
+  if (labelsDialog.value) return 'labels';
+  if (compose.value !== null) return 'compose';
+  return null;
+});
 
 function google(): GoogleApi {
   return props.googleApi ?? createRendererAppApi(window.aurora).google;
@@ -270,6 +294,7 @@ async function loadList(gen: number): Promise<void> {
 }
 
 async function startList(): Promise<void> {
+  visibleStale.value = false;
   invalidateBulk();
   threads.value = [];
   messages.value = [];
@@ -284,6 +309,7 @@ async function startList(): Promise<void> {
 }
 
 async function reloadPage(): Promise<void> {
+  visibleStale.value = false;
   invalidateBulk();
   threads.value = [];
   messages.value = [];
@@ -529,9 +555,35 @@ function bulkUserLabel(mode: 'add' | 'remove'): void {
   );
 }
 
-function openLabelDialog(): void {
+function pushOpener(event?: Event): void {
+  const target = event?.currentTarget;
+  if (target instanceof HTMLElement) modalOpeners.push(target);
+}
+
+function popOpener(): void {
+  const opener = modalOpeners.pop() ?? null;
+  focusElement(opener);
+}
+
+function openLabelDialog(event: Event): void {
+  pushOpener(event);
   labelNotice.value = '';
   labelsDialog.value = true;
+}
+
+function askDeleteLabel(label: GmailLabel): void {
+  deleteLabelReturnId = label.id;
+  deleteLabelTarget.value = label;
+}
+
+function askDeleteDraft(event: Event): void {
+  deleteDraftOpener = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  pendingDelete.value = true;
+}
+
+function openBulkTrash(event: Event): void {
+  pushOpener(event);
+  bulkTrash.value = true;
 }
 
 async function refreshLabelList(account: string): Promise<void> {
@@ -628,14 +680,12 @@ function refreshSearch(): void {
 }
 
 function askTrash(threadId: string, event: Event): void {
-  trashOpener = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+  pushOpener(event);
   trashTarget.value = threadId;
 }
 
 function closeTrash(): void {
   trashTarget.value = null;
-  trashOpener?.focus();
-  trashOpener = null;
 }
 
 function labelApplied(labelIdValue: string): boolean {
@@ -1033,8 +1083,8 @@ function askDiscard(next: () => void): void {
     next();
     return;
   }
+  discardOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   pendingDiscard.value = next;
-  void nextTick(() => keepComposeButton.value?.focus());
 }
 
 function keepCompose(): void {
@@ -1059,7 +1109,7 @@ function requireMailChange(): boolean {
   return false;
 }
 
-function requestNewMessage(): void {
+function requestNewMessage(event?: Event): void {
   if (!requireMailChange()) return;
   const account = selectedAccount.value;
   if (account === undefined) return;
@@ -1087,10 +1137,17 @@ function requestNewMessage(): void {
     });
   };
   if (compose.value !== null) askDiscard(open);
-  else open();
+  else {
+    pushOpener(event);
+    open();
+  }
 }
 
-function requestSeed(kind: 'reply' | 'reply-all' | 'forward', item: GmailMessage): void {
+function requestSeed(
+  kind: 'reply' | 'reply-all' | 'forward',
+  item: GmailMessage,
+  event?: Event
+): void {
   if (!requireMailChange()) return;
   const account = selectedAccount.value;
   const threadId = openId.value;
@@ -1146,7 +1203,10 @@ function requestSeed(kind: 'reply' | 'reply-all' | 'forward', item: GmailMessage
     }
   };
   if (compose.value !== null) askDiscard(() => void open());
-  else void open();
+  else {
+    pushOpener(event);
+    void open();
+  }
 }
 
 function draftText(field: 'to' | 'cc' | 'bcc'): string {
@@ -1433,7 +1493,7 @@ function viewDrafts(): void {
   void reloadPage();
 }
 
-function requestEdit(item: GmailMessage): void {
+function requestEdit(item: GmailMessage, event?: Event): void {
   if (!requireMailChange() || openId.value === null) return;
   const threadId = openId.value;
   const account = selectedAccount.value;
@@ -1485,7 +1545,10 @@ function requestEdit(item: GmailMessage): void {
     }
   };
   if (compose.value !== null) askDiscard(() => void open());
-  else void open();
+  else {
+    pushOpener(event);
+    void open();
+  }
 }
 
 async function pickFiles(): Promise<void> {
@@ -1689,27 +1752,110 @@ async function submitCompose(): Promise<void> {
   }
 }
 
-function onComposeKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape' && pendingDiscard.value === null) {
-    event.preventDefault();
-    requestCloseCompose();
+function focusLive(selector: string): void {
+  void nextTick(() => {
+    void nextTick(() => {
+      document.querySelector<HTMLElement>(selector)?.focus();
+    });
+  });
+}
+
+function focusElement(element: HTMLElement | null): void {
+  void nextTick(() => {
+    void nextTick(() => {
+      if (element?.isConnected) element.focus();
+    });
+  });
+}
+
+function focusModal(name: MailModal): void {
+  const selector =
+    name === 'discard'
+      ? '[aria-labelledby="discard-title"] button'
+      : name === 'delete-draft'
+        ? '[aria-labelledby="delete-draft-title"] button'
+        : name === 'delete-label'
+          ? '[aria-labelledby="delete-label-title"] button'
+          : name === 'trash'
+            ? '[aria-labelledby="trash-title"] button'
+            : name === 'bulk-trash'
+              ? '[aria-labelledby="bulk-trash-title"] button'
+              : name === 'labels'
+                ? '#new-label'
+                : '';
+  if (selector !== '') focusLive(selector);
+}
+
+function cancelActiveModal(): void {
+  if (pendingDiscard.value !== null) {
+    keepCompose();
     return;
   }
-  if (event.key !== 'Tab') return;
-  const root = event.currentTarget;
-  if (!(root instanceof HTMLElement)) return;
-  const items = [...root.querySelectorAll<HTMLElement>('button, input, textarea, a')].filter(
-    (item) => !item.hasAttribute('disabled')
-  );
+  if (pendingDelete.value) {
+    pendingDelete.value = false;
+    return;
+  }
+  if (deleteLabelTarget.value !== null) {
+    deleteLabelTarget.value = null;
+    return;
+  }
+  if (trashTarget.value !== null) {
+    closeTrash();
+    return;
+  }
+  if (bulkTrash.value) {
+    bulkTrash.value = false;
+    return;
+  }
+  if (labelsDialog.value) {
+    labelsDialog.value = false;
+    return;
+  }
+  requestCloseCompose();
+}
+
+function trapModalTab(event: KeyboardEvent): void {
+  const root = document.querySelector<HTMLElement>('[data-mail-modal="active"]');
+  if (root === null) return;
+  const items = [
+    ...root.querySelectorAll<HTMLElement>('button, input, textarea, select, a[href]')
+  ].filter((item) => !item.hasAttribute('disabled'));
   const first = items[0];
   const last = items[items.length - 1];
   if (first === undefined || last === undefined) return;
-  if (event.shiftKey && document.activeElement === first) {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLElement) || !root.contains(active)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+    return;
+  }
+  if (event.shiftKey && active === first) {
     event.preventDefault();
     last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
+  } else if (!event.shiftKey && active === last) {
     event.preventDefault();
     first.focus();
+  }
+}
+
+function closeLabelMenu(): void {
+  labelsOpen.value = false;
+  focusElement(conversationLabelsButton.value);
+}
+
+function onWindowKeydown(event: KeyboardEvent): void {
+  if (activeModal.value !== null) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelActiveModal();
+      return;
+    }
+    if (event.key === 'Tab') trapModalTab(event);
+    return;
+  }
+  if (event.key === 'Escape' && labelsOpen.value) {
+    event.preventDefault();
+    closeLabelMenu();
   }
 }
 
@@ -1720,29 +1866,29 @@ function onBodyKeydown(event: KeyboardEvent): void {
   }
 }
 
-watch(trashTarget, (value) => {
-  if (value === null) return;
-  void nextTick(() => {
-    cancelTrashButton.value?.focus();
-  });
-});
-
 watch([someVisibleSelected, selectAllBox], () => {
   if (selectAllBox.value !== null) selectAllBox.value.indeterminate = someVisibleSelected.value;
 });
 
-watch(bulkTrash, (value) => {
-  if (!value) return;
-  void nextTick(() => {
-    cancelBulkTrashButton.value?.focus();
-  });
-});
-
-watch(deleteLabelTarget, (value) => {
-  if (value === null) return;
-  void nextTick(() => {
-    cancelDeleteLabelButton.value?.focus();
-  });
+watch(activeModal, (next, previous) => {
+  if (previous === 'discard' && next === 'compose') {
+    focusElement(discardOpener);
+    return;
+  }
+  if (previous === 'delete-draft' && next === 'compose') {
+    focusElement(deleteDraftOpener);
+    return;
+  }
+  if (previous === 'delete-label' && next === 'labels') {
+    focusLive(`#delete-label-${deleteLabelReturnId ?? ''}`);
+    return;
+  }
+  if (next === null) {
+    popOpener();
+    return;
+  }
+  if (next === 'compose') return;
+  void nextTick(() => focusModal(next));
 });
 
 function onHtmlClick(event: MouseEvent): void {
@@ -1775,8 +1921,9 @@ function relativeTime(iso: string, current: number): string {
 }
 
 const syncLine = computed(() => {
+  if (visibleStale.value) return '';
   const current = syncState.value;
-  if (current === null) return '';
+  if (current === null) return syncStatusFailed.value ? 'Aurora could not reach Google.' : '';
   if (current.notificationsBlocked) return 'Windows is not showing Aurora notifications.';
   if (current.state === 'bootstrapping' || current.state === 'syncing')
     return 'Checking for new mail';
@@ -1785,15 +1932,36 @@ const syncLine = computed(() => {
   return `Updated ${relativeTime(current.lastSuccessAt, syncNow.value)}`;
 });
 
-const notificationsOn = computed(() => syncState.value?.notifications !== 'off');
-const contentShown = computed(() => syncState.value?.content !== 'hide');
+const notificationsOn = computed(() => syncState.value?.notifications === 'on');
+const contentShown = computed(() => syncState.value?.content === 'show');
+
+function syncFailureMessage(error: unknown): string {
+  return error instanceof GmailIpcError ? error.message : gmailErrorMessage('internal');
+}
+
+function noteVisibleRefreshFailure(error: unknown): void {
+  visibleStale.value = true;
+  refreshMessage = syncFailureMessage(error);
+  actionNotice.value = refreshMessage;
+}
+
+function noteVisibleRefreshSuccess(): void {
+  visibleStale.value = false;
+  if (refreshMessage !== '' && actionNotice.value === refreshMessage) actionNotice.value = '';
+  refreshMessage = '';
+}
 
 async function loadSyncStatus(): Promise<void> {
   if (accountId.value === '') return;
+  const account = accountId.value;
   try {
-    syncState.value = await gmail().syncStatus(accountId.value);
+    const next = await gmail().syncStatus(account);
+    if (account !== accountId.value) return;
+    syncState.value = next;
+    syncStatusFailed.value = false;
   } catch {
-    syncState.value = null;
+    if (account !== accountId.value) return;
+    if (syncState.value === null) syncStatusFailed.value = true;
   }
 }
 
@@ -1812,10 +1980,51 @@ function publishView(): void {
     .catch(() => undefined);
 }
 
+async function recoverVisibleMailbox(): Promise<void> {
+  if (visibleRecovery !== null) return visibleRecovery;
+  let tracked: Promise<void> = Promise.resolve();
+  const run = (async () => {
+    const gen = generation;
+    const account = accountId.value;
+    try {
+      const listed = await gmail().listLabels(account);
+      if (gen !== generation || account !== accountId.value) return;
+      labels.value = listed.labels;
+      const page = await gmail().listThreads({
+        accountId: account,
+        labelId: activeQuery.value === null ? labelId.value : null,
+        query: activeQuery.value,
+        pageToken: pageTokens.value[pageIndex.value] ?? null
+      });
+      if (gen !== generation || account !== accountId.value) return;
+      threads.value = page.threads;
+      nextPageToken.value = page.nextPageToken;
+      if (openId.value !== null) {
+        const thread = await gmail().readThread(account, openId.value);
+        if (gen !== generation || openId.value === null) return;
+        messages.value = thread.messages;
+      }
+      noteVisibleRefreshSuccess();
+    } catch (error) {
+      if (gen !== generation || account !== accountId.value) return;
+      noteVisibleRefreshFailure(error);
+    }
+  })();
+  tracked = run.finally(() => {
+    if (visibleRecovery === tracked) visibleRecovery = null;
+  });
+  visibleRecovery = tracked;
+  return tracked;
+}
+
 async function applySync(event: GmailSyncChanged): Promise<void> {
   if (event.accountId !== accountId.value) return;
   await loadSyncStatus();
-  if (event.refresh === 'none') return;
+  if (event.accountId !== accountId.value) return;
+  if (event.refresh === 'none') {
+    if (visibleStale.value) await recoverVisibleMailbox();
+    return;
+  }
   const gen = generation;
   try {
     if (event.refresh === 'labels' || event.refresh === 'page' || event.refresh === 'thread') {
@@ -1833,7 +2042,7 @@ async function applySync(event: GmailSyncChanged): Promise<void> {
       if (gen !== generation || event.accountId !== accountId.value) return;
       threads.value = page.threads;
       nextPageToken.value = page.nextPageToken;
-      if (openId.value !== null && (event.threadId === null || event.threadId === openId.value)) {
+      if (openId.value !== null && event.threadId === openId.value) {
         const thread = await gmail().readThread(accountId.value, openId.value);
         if (gen !== generation || openId.value === null) return;
         messages.value = thread.messages;
@@ -1844,8 +2053,11 @@ async function applySync(event: GmailSyncChanged): Promise<void> {
       if (gen !== generation || openId.value !== event.threadId) return;
       messages.value = thread.messages;
     }
-  } catch {
-    return;
+    if (gen !== generation || event.accountId !== accountId.value) return;
+    noteVisibleRefreshSuccess();
+  } catch (error) {
+    if (gen !== generation || event.accountId !== accountId.value) return;
+    noteVisibleRefreshFailure(error);
   }
 }
 
@@ -1856,7 +2068,10 @@ function onWindowFocus(): void {
     .then((next) => {
       if (accountId.value !== '') syncState.value = next;
     })
-    .catch(() => undefined);
+    .catch(() => undefined)
+    .finally(() => {
+      if (visibleStale.value && accountId.value !== '') void recoverVisibleMailbox();
+    });
 }
 
 async function saveNotificationPreference(
@@ -1892,15 +2107,23 @@ async function openNotified(target: { accountId: string; threadId: string }): Pr
   if (!accounts.value.some((item) => item.id === target.accountId && item.status === 'connected')) {
     return;
   }
-  if (accountId.value !== target.accountId || activeQuery.value !== null) {
+  const apply = async (): Promise<void> => {
     accountId.value = target.accountId;
     searchText.value = '';
     activeQuery.value = null;
     labelId.value = 'INBOX';
+    resetPages();
     await startList();
+    if (accountId.value !== target.accountId) return;
+    await openThread(target.threadId);
+  };
+  if (compose.value !== null) {
+    askDiscard(() => {
+      void apply();
+    });
+    return;
   }
-  if (accountId.value !== target.accountId) return;
-  await openThread(target.threadId);
+  await apply();
 }
 
 function queueNotificationOpen(): void {
@@ -1928,6 +2151,7 @@ onBeforeRouteLeave((to) => {
 
 onMounted(() => {
   window.addEventListener('beforeunload', warnBeforeUnload);
+  window.addEventListener('keydown', onWindowKeydown);
   window.addEventListener('focus', onWindowFocus);
   stopSyncListen = gmail().listenSync((event) => {
     void applySync(event);
@@ -1956,6 +2180,7 @@ onMounted(() => {
 onUnmounted(() => {
   clearSaveTimer();
   window.removeEventListener('beforeunload', warnBeforeUnload);
+  window.removeEventListener('keydown', onWindowKeydown);
   window.removeEventListener('focus', onWindowFocus);
   stopSyncListen();
   window.clearInterval(syncClock);
@@ -1966,6 +2191,10 @@ watch([accountId, labelId, activeQuery, openId], () => {
 });
 
 watch(accountId, () => {
+  syncState.value = null;
+  syncStatusFailed.value = false;
+  visibleStale.value = false;
+  refreshMessage = '';
   void loadSyncStatus();
 });
 
@@ -1976,143 +2205,524 @@ watch(pendingMailOpen, () => {
 
 <template>
   <div class="mail-screen" :class="{ 'is-reading': openId !== null }">
-    <h1 v-if="openId === null" class="page-title">Mail</h1>
-    <StatusPanel
-      v-if="connectedAccounts.length === 0 && status !== 'loading'"
-      kind="empty"
-      title="No connected account"
-      message="Connect a Google account in Integrations before reading mail."
-    />
-    <template v-else>
-      <div v-if="openId === null" class="mail-toolbar">
-        <button class="control" type="button" @click="requestNewMessage">
-          <SquarePen :size="16" :stroke-width="1.75" aria-hidden="true" />
-          Compose
-        </button>
-        <div class="account-field">
-          <select
-            class="field field-select"
-            :value="accountId"
-            aria-label="Google account"
-            @change="chooseAccount"
-          >
-            <option
-              v-for="account in accounts"
-              :key="account.id"
-              :value="account.id"
-              :disabled="account.status !== 'connected'"
+    <div class="mail-content" :inert="activeModal !== null ? true : undefined">
+      <h1 v-if="openId === null" class="page-title">Mail</h1>
+      <StatusPanel
+        v-if="connectedAccounts.length === 0 && status !== 'loading'"
+        kind="empty"
+        title="No connected account"
+        message="Connect a Google account in Integrations before reading mail."
+      />
+      <template v-else>
+        <div v-if="openId === null" class="mail-toolbar">
+          <button class="control" type="button" @click="requestNewMessage($event)">
+            <SquarePen :size="16" :stroke-width="1.75" aria-hidden="true" />
+            Compose
+          </button>
+          <div class="account-field">
+            <select
+              class="field field-select"
+              :value="accountId"
+              aria-label="Google account"
+              @change="chooseAccount"
             >
-              {{ accountLabel(account) }}
-            </option>
-          </select>
-          <ChevronsUpDown class="field-icon" :size="16" :stroke-width="1.75" aria-hidden="true" />
-        </div>
-        <form @submit.prevent="submitSearch">
-          <div class="search-field">
-            <Search class="field-icon" :size="16" :stroke-width="1.75" aria-hidden="true" />
-            <input
-              v-model="searchText"
-              class="field field-text"
-              type="search"
-              aria-label="Search Gmail"
-              placeholder="Search Gmail"
-              :disabled="status === 'loading'"
-            />
+              <option
+                v-for="account in accounts"
+                :key="account.id"
+                :value="account.id"
+                :disabled="account.status !== 'connected'"
+              >
+                {{ accountLabel(account) }}
+              </option>
+            </select>
+            <ChevronsUpDown class="field-icon" :size="16" :stroke-width="1.75" aria-hidden="true" />
           </div>
-          <button
-            class="control control-accent"
-            type="submit"
-            :disabled="status === 'loading'"
-            :aria-busy="status === 'loading' ? 'true' : undefined"
-          >
-            Search
-          </button>
-        </form>
-      </div>
-      <div v-if="accountId !== ''" class="mail-sync">
-        <p v-if="syncState?.state === 'needs-reauth'" role="status">
-          Reconnect this Google account before changing mail.
-          <RouterLink class="text-link" to="/integrations">Reconnect</RouterLink>
-        </p>
-        <p v-else-if="syncLine !== ''" role="status" :aria-busy="syncBusy() ? 'true' : undefined">
-          {{ syncLine }}
-        </p>
-        <label class="choice">
-          <input
-            type="checkbox"
-            :checked="notificationsOn"
-            aria-label="Notify me of new mail"
-            @change="toggleNotifications"
-          />
-          Notify me of new mail
-        </label>
-        <label class="choice">
-          <input
-            type="checkbox"
-            :checked="contentShown"
-            aria-label="Show sender and subject"
-            @change="toggleContent"
-          />
-          Show sender and subject
-        </label>
-      </div>
-      <p v-if="composeStatus" role="status">{{ composeStatus }}</p>
-      <p v-if="actionNotice && openId === null" role="alert">{{ actionNotice }}</p>
-      <div
-        v-if="openId === null"
-        class="mail-workspace"
-        :class="{ 'is-folders-open': foldersExpanded }"
-      >
-        <div class="mail-folder-bar">
-          <button
-            class="control mail-folder-toggle"
-            type="button"
-            aria-label="Folders"
-            :aria-expanded="foldersExpanded"
-            @click="foldersExpanded = !foldersExpanded"
-          >
-            <PanelLeft :size="16" :stroke-width="1.75" aria-hidden="true" />
-          </button>
-          <nav class="mail-folders" aria-label="Labels">
+          <form @submit.prevent="submitSearch">
+            <div class="search-field">
+              <Search class="field-icon" :size="16" :stroke-width="1.75" aria-hidden="true" />
+              <input
+                v-model="searchText"
+                class="field field-text"
+                type="search"
+                aria-label="Search Gmail"
+                placeholder="Search Gmail"
+                :disabled="status === 'loading'"
+              />
+            </div>
             <button
-              v-for="label in labels"
-              :key="label.id"
-              class="folder-button"
-              type="button"
-              :aria-pressed="folderSelected(label.id)"
+              class="control control-accent"
+              type="submit"
               :disabled="status === 'loading'"
-              @click="chooseLabel(label.id)"
+              :aria-busy="status === 'loading' ? 'true' : undefined"
             >
-              <component
-                :is="folderIcon(label)"
+              Search
+            </button>
+          </form>
+        </div>
+        <div v-if="accountId !== ''" class="mail-sync">
+          <p v-if="syncState?.state === 'needs-reauth'" role="status">
+            Reconnect this Google account before changing mail.
+            <RouterLink class="text-link" to="/integrations">Reconnect</RouterLink>
+          </p>
+          <p v-else-if="syncLine !== ''" role="status" :aria-busy="syncBusy() ? 'true' : undefined">
+            {{ syncLine }}
+          </p>
+          <label class="choice">
+            <input
+              type="checkbox"
+              :checked="notificationsOn"
+              :disabled="syncState === null"
+              aria-label="Notify me of new mail"
+              @change="toggleNotifications"
+            />
+            Notify me of new mail
+          </label>
+          <label class="choice">
+            <input
+              type="checkbox"
+              :checked="contentShown"
+              :disabled="syncState === null"
+              aria-label="Show sender and subject"
+              @change="toggleContent"
+            />
+            Show sender and subject
+          </label>
+        </div>
+        <p v-if="composeStatus" role="status">{{ composeStatus }}</p>
+        <p v-if="actionNotice && openId === null" role="alert">{{ actionNotice }}</p>
+        <div
+          v-if="openId === null"
+          class="mail-workspace"
+          :class="{ 'is-folders-open': foldersExpanded }"
+        >
+          <div class="mail-folder-bar">
+            <button
+              class="control mail-folder-toggle"
+              type="button"
+              aria-label="Folders"
+              :aria-expanded="foldersExpanded"
+              @click="foldersExpanded = !foldersExpanded"
+            >
+              <PanelLeft :size="16" :stroke-width="1.75" aria-hidden="true" />
+            </button>
+            <nav class="mail-folders" aria-label="Labels">
+              <button
+                v-for="label in labels"
+                :key="label.id"
+                class="folder-button"
+                type="button"
+                :aria-pressed="folderSelected(label.id)"
+                :disabled="status === 'loading'"
+                @click="chooseLabel(label.id)"
+              >
+                <component
+                  :is="folderIcon(label)"
+                  :size="16"
+                  :stroke-width="1.75"
+                  aria-hidden="true"
+                />
+                <span class="folder-name">{{ label.name }}</span>
+                <span v-if="label.unreadCount !== null" class="folder-count">{{
+                  label.unreadCount
+                }}</span>
+              </button>
+            </nav>
+            <button
+              v-if="canChangeMail()"
+              class="control mail-labels-button"
+              type="button"
+              aria-label="Labels"
+              :disabled="status === 'loading' || labelBusy"
+              @click="openLabelDialog($event)"
+            >
+              <Tag :size="16" :stroke-width="1.75" aria-hidden="true" />
+              <span class="mail-labels-name">Labels</span>
+            </button>
+          </div>
+          <div class="mail-stage">
+            <StatusPanel
+              v-if="status === 'loading'"
+              kind="loading"
+              title="Loading"
+              message="Loading conversations."
+            />
+            <template v-else-if="status === 'error'">
+              <StatusPanel kind="error" title="Mail is unavailable" :message="detail" />
+              <RouterLink v-if="showRecovery" class="text-link" to="/integrations">
+                Integrations
+              </RouterLink>
+            </template>
+            <template v-else>
+              <p v-if="selectedAccount && selectedAccount.canModifyMail !== true" role="status">
+                Reconnect this Google account before changing mail.
+                <RouterLink class="text-link" to="/integrations">Reconnect</RouterLink>
+              </p>
+              <p v-if="actionNotice" role="alert">{{ actionNotice }}</p>
+              <p v-if="searchStale" role="status">
+                These search results may no longer match Gmail.
+                <button class="control" type="button" @click="refreshSearch">Refresh</button>
+              </p>
+              <p v-if="activeQuery !== null" class="text-sm text-muted" role="status">
+                Search results
+              </p>
+              <div v-if="canChangeMail()" class="mail-select-bar">
+                <label class="mail-check">
+                  <input
+                    ref="selectAllBox"
+                    type="checkbox"
+                    :checked="allVisibleSelected"
+                    :aria-checked="
+                      someVisibleSelected ? 'mixed' : allVisibleSelected ? 'true' : 'false'
+                    "
+                    aria-label="Select all visible conversations"
+                    :disabled="threads.length === 0 || bulkBusy"
+                    @change="toggleAllVisible"
+                  />
+                </label>
+                <span v-if="selectedCount > 0">{{ selectedCount }} selected</span>
+                <button
+                  v-if="selectedCount > 0"
+                  class="control"
+                  type="button"
+                  :disabled="bulkBusy"
+                  @click="clearSelection"
+                >
+                  Clear selection
+                </button>
+              </div>
+              <div
+                v-if="canChangeMail() && selectedCount > 0"
+                class="mail-bulk"
+                :aria-busy="bulkBusy ? 'true' : undefined"
+              >
+                <button
+                  class="control"
+                  type="button"
+                  :disabled="bulkBusy"
+                  @click="bulkThreads('read')"
+                >
+                  Mark as read
+                </button>
+                <button
+                  class="control"
+                  type="button"
+                  :disabled="bulkBusy"
+                  @click="bulkThreads('unread')"
+                >
+                  Mark as unread
+                </button>
+                <button
+                  v-if="labelId === 'INBOX' || activeQuery !== null"
+                  class="control"
+                  type="button"
+                  :disabled="bulkBusy"
+                  @click="bulkThreads('archive')"
+                >
+                  Archive
+                </button>
+                <button
+                  v-if="labelId === 'TRASH'"
+                  class="control"
+                  type="button"
+                  :disabled="bulkBusy"
+                  @click="bulkThreads('untrash')"
+                >
+                  Restore
+                </button>
+                <button
+                  v-if="labelId !== 'TRASH'"
+                  class="control control-danger"
+                  type="button"
+                  :disabled="bulkBusy"
+                  @click="openBulkTrash($event)"
+                >
+                  Move to Trash
+                </button>
+                <button
+                  class="control"
+                  type="button"
+                  :disabled="bulkBusy"
+                  aria-describedby="bulk-star-note"
+                  @click="bulkThreads('star')"
+                >
+                  Star
+                </button>
+                <button
+                  class="control"
+                  type="button"
+                  :disabled="bulkBusy"
+                  aria-describedby="bulk-star-note"
+                  @click="bulkThreads('unstar')"
+                >
+                  Unstar
+                </button>
+                <p id="bulk-star-note" class="text-sm text-muted">
+                  Star marks only the newest message in each conversation. Unstar removes the star
+                  from messages that already have one, up to 50 per conversation. A conversation
+                  with more starred messages is not reported as fully updated.
+                </p>
+                <label v-if="userLabels.length > 0" class="mail-bulk-label">
+                  Label
+                  <select
+                    id="bulk-label"
+                    v-model="bulkLabelId"
+                    class="field field-select"
+                    :disabled="bulkBusy"
+                  >
+                    <option value="">Choose a label</option>
+                    <option v-for="label in userLabels" :key="label.id" :value="label.id">
+                      {{ label.name }}
+                    </option>
+                  </select>
+                </label>
+                <button
+                  v-if="userLabels.length > 0"
+                  class="control"
+                  type="button"
+                  :disabled="bulkBusy || bulkLabelId.length === 0"
+                  @click="bulkUserLabel('add')"
+                >
+                  Add
+                </button>
+                <button
+                  v-if="userLabels.length > 0"
+                  class="control"
+                  type="button"
+                  :disabled="bulkBusy || bulkLabelId.length === 0"
+                  @click="bulkUserLabel('remove')"
+                >
+                  Remove
+                </button>
+                <p v-else class="text-sm text-muted">No labels. Open Labels to create one.</p>
+              </div>
+              <p v-if="bulkStatus" role="status">{{ bulkStatus }}</p>
+              <StatusPanel
+                v-if="threads.length === 0"
+                kind="empty"
+                title="No conversations"
+                message="This mailbox has no conversations to show."
+              />
+              <div v-else class="mail-list">
+                <ul class="mail-rows">
+                  <li
+                    v-for="thread in threads"
+                    :key="thread.id"
+                    class="mail-row-line"
+                    :class="{ 'has-select': canChangeMail() }"
+                  >
+                    <label v-if="canChangeMail()" class="mail-check">
+                      <input
+                        type="checkbox"
+                        :checked="rowSelected(thread.id)"
+                        :aria-label="`Select ${thread.subject ?? '(no subject)'}`"
+                        :disabled="bulkBusy"
+                        @change="toggleRow(thread.id)"
+                      />
+                    </label>
+                    <button
+                      class="mail-row"
+                      :class="{ 'is-unread': thread.unread }"
+                      type="button"
+                      @click="openThread(thread.id)"
+                    >
+                      <span
+                        class="mail-unread"
+                        :class="{ 'is-on': thread.unread }"
+                        aria-hidden="true"
+                      ></span>
+                      <span class="mail-copy">
+                        <span class="mail-line-primary">
+                          <Star
+                            v-if="thread.starred"
+                            class="mail-star"
+                            :size="16"
+                            :stroke-width="1.75"
+                            aria-hidden="true"
+                          />
+                          <span class="mail-subject">{{ thread.subject ?? '(no subject)' }}</span>
+                          <span v-if="thread.snippet" class="mail-snippet">{{
+                            thread.snippet
+                          }}</span>
+                        </span>
+                        <span class="mail-line-secondary">
+                          <span class="mail-sender">{{ thread.from }}</span>
+                          <span class="mail-date">{{ formatDate(thread.date) }}</span>
+                        </span>
+                      </span>
+                      <span v-if="thread.unread" class="sr-only">Unread</span>
+                      <span v-if="thread.starred" class="sr-only">Starred</span>
+                    </button>
+                    <div
+                      class="mail-row-actions"
+                      :aria-busy="threadBusy(thread.id) ? 'true' : undefined"
+                    >
+                      <button
+                        class="control"
+                        type="button"
+                        :aria-label="thread.unread ? 'Mark as read' : 'Mark as unread'"
+                        :disabled="threadBusy(thread.id) || bulkBusy"
+                        @click="changeRead(thread.id, !thread.unread)"
+                      >
+                        <MailOpen
+                          v-if="thread.unread"
+                          :size="16"
+                          :stroke-width="1.75"
+                          aria-hidden="true"
+                        />
+                        <Mail v-else :size="16" :stroke-width="1.75" aria-hidden="true" />
+                      </button>
+                      <button
+                        v-if="labelId === 'TRASH'"
+                        class="control"
+                        type="button"
+                        aria-label="Restore"
+                        :disabled="threadBusy(thread.id) || bulkBusy"
+                        @click="restoreConversation(thread.id)"
+                      >
+                        <RotateCcw :size="16" :stroke-width="1.75" aria-hidden="true" />
+                      </button>
+                      <button
+                        v-else-if="labelId === 'INBOX' || activeQuery !== null"
+                        class="control"
+                        type="button"
+                        aria-label="Archive"
+                        :disabled="threadBusy(thread.id) || bulkBusy"
+                        @click="archiveConversation(thread.id)"
+                      >
+                        <Archive :size="16" :stroke-width="1.75" aria-hidden="true" />
+                      </button>
+                      <button
+                        v-if="labelId !== 'TRASH'"
+                        class="control control-danger"
+                        type="button"
+                        aria-label="Move to Trash"
+                        :disabled="threadBusy(thread.id) || bulkBusy"
+                        @click="askTrash(thread.id, $event)"
+                      >
+                        <Trash2 :size="16" :stroke-width="1.75" aria-hidden="true" />
+                      </button>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+              <div class="mail-pager">
+                <button
+                  class="control"
+                  type="button"
+                  :disabled="pageIndex === 0"
+                  @click="showPrevious"
+                >
+                  Previous
+                </button>
+                <button
+                  class="control"
+                  type="button"
+                  :disabled="nextPageToken === null"
+                  @click="showNext"
+                >
+                  Next
+                </button>
+              </div>
+            </template>
+          </div>
+        </div>
+        <div v-else class="mail-stage">
+          <div class="conversation-header">
+            <button class="control" type="button" @click="back">
+              <ChevronLeft :size="16" :stroke-width="1.75" aria-hidden="true" />
+              Back
+            </button>
+            <button class="control" type="button" @click="requestNewMessage($event)">
+              <SquarePen :size="16" :stroke-width="1.75" aria-hidden="true" />
+              Compose
+            </button>
+            <h2 class="conversation-subject">{{ conversationSubject }}</h2>
+            <p class="conversation-date">{{ formatDate(conversationDate) }}</p>
+          </div>
+          <div class="conversation-actions">
+            <button
+              class="control"
+              type="button"
+              :disabled="openId !== null && threadBusy(openId)"
+              :aria-busy="openId !== null && threadBusy(openId) ? 'true' : undefined"
+              @click="changeRead(openId ?? '', !conversationUnread)"
+            >
+              <MailOpen
+                v-if="conversationUnread"
                 :size="16"
                 :stroke-width="1.75"
                 aria-hidden="true"
               />
-              <span class="folder-name">{{ label.name }}</span>
-              <span v-if="label.unreadCount !== null" class="folder-count">{{
-                label.unreadCount
-              }}</span>
+              <Mail v-else :size="16" :stroke-width="1.75" aria-hidden="true" />
+              {{ conversationUnread ? 'Mark read' : 'Mark unread' }}
             </button>
-          </nav>
-          <button
-            v-if="canChangeMail()"
-            class="control mail-labels-button"
-            type="button"
-            aria-label="Labels"
-            :disabled="status === 'loading' || labelBusy"
-            @click="openLabelDialog"
-          >
-            <Tag :size="16" :stroke-width="1.75" aria-hidden="true" />
-            <span class="mail-labels-name">Labels</span>
-          </button>
-        </div>
-        <div class="mail-stage">
+            <button
+              v-if="conversationInTrash"
+              class="control"
+              type="button"
+              :disabled="openId !== null && threadBusy(openId)"
+              @click="restoreConversation(openId ?? '')"
+            >
+              <RotateCcw :size="16" :stroke-width="1.75" aria-hidden="true" />
+              Restore
+            </button>
+            <button
+              v-else-if="conversationInInbox"
+              class="control"
+              type="button"
+              :disabled="openId !== null && threadBusy(openId)"
+              @click="archiveConversation(openId ?? '')"
+            >
+              <Archive :size="16" :stroke-width="1.75" aria-hidden="true" />
+              Archive
+            </button>
+            <button
+              v-if="!conversationInTrash"
+              class="control control-danger"
+              type="button"
+              :disabled="openId !== null && threadBusy(openId)"
+              @click="askTrash(openId ?? '', $event)"
+            >
+              <Trash2 :size="16" :stroke-width="1.75" aria-hidden="true" />
+              Trash
+            </button>
+            <button
+              ref="conversationLabelsButton"
+              class="control"
+              type="button"
+              :aria-expanded="labelsOpen"
+              @click="labelsOpen = !labelsOpen"
+            >
+              <Tag :size="16" :stroke-width="1.75" aria-hidden="true" />
+              Labels
+            </button>
+          </div>
+          <p v-if="selectedAccount && selectedAccount.canModifyMail !== true" role="status">
+            Reconnect this Google account before changing mail.
+            <RouterLink class="text-link" to="/integrations">Reconnect</RouterLink>
+          </p>
+          <p v-if="actionNotice && openId !== null" role="alert">{{ actionNotice }}</p>
+          <div v-if="labelsOpen" class="label-menu" role="group" aria-label="Labels">
+            <p v-if="userLabels.length === 0">No labels</p>
+            <button
+              v-for="label in userLabels"
+              :key="label.id"
+              class="control"
+              type="button"
+              :aria-pressed="labelApplied(label.id)"
+              :disabled="openId !== null && threadBusy(openId)"
+              @click="toggleUserLabel(label)"
+              @keydown.enter.prevent="toggleUserLabel(label)"
+              @keydown.space.prevent="toggleUserLabel(label)"
+            >
+              {{ label.name }}
+            </button>
+          </div>
           <StatusPanel
             v-if="status === 'loading'"
             kind="loading"
             title="Loading"
-            message="Loading conversations."
+            message="Loading the conversation."
           />
           <template v-else-if="status === 'error'">
             <StatusPanel kind="error" title="Mail is unavailable" :message="detail" />
@@ -2120,476 +2730,111 @@ watch(pendingMailOpen, () => {
               Integrations
             </RouterLink>
           </template>
-          <template v-else>
-            <p v-if="selectedAccount && selectedAccount.canModifyMail !== true" role="status">
-              Reconnect this Google account before changing mail.
-              <RouterLink class="text-link" to="/integrations">Reconnect</RouterLink>
-            </p>
-            <p v-if="actionNotice" role="alert">{{ actionNotice }}</p>
-            <p v-if="searchStale" role="status">
-              These search results may no longer match Gmail.
-              <button class="control" type="button" @click="refreshSearch">Refresh</button>
-            </p>
-            <p v-if="activeQuery !== null" class="text-sm text-muted" role="status">
-              Search results
-            </p>
-            <div v-if="canChangeMail()" class="mail-select-bar">
-              <label class="mail-check">
-                <input
-                  ref="selectAllBox"
-                  type="checkbox"
-                  :checked="allVisibleSelected"
-                  :aria-checked="
-                    someVisibleSelected ? 'mixed' : allVisibleSelected ? 'true' : 'false'
-                  "
-                  aria-label="Select all visible conversations"
-                  :disabled="threads.length === 0 || bulkBusy"
-                  @change="toggleAllVisible"
-                />
-              </label>
-              <span v-if="selectedCount > 0">{{ selectedCount }} selected</span>
+          <article v-for="item in messages" v-else :key="item.id" class="mail-message">
+            <div class="mail-meta">
+              <p class="mail-meta-line" :class="{ 'is-open': expandedMeta[item.id] === true }">
+                <span v-if="item.unread">Unread </span>
+                <span>From {{ item.from }}</span>
+                <span v-if="item.to"> To {{ item.to }}</span>
+                <span v-if="item.cc"> Cc {{ item.cc }}</span>
+                <span v-if="item.bcc"> Bcc {{ item.bcc }}</span>
+              </p>
               <button
-                v-if="selectedCount > 0"
                 class="control"
                 type="button"
-                :disabled="bulkBusy"
-                @click="clearSelection"
+                :aria-pressed="item.starred"
+                :aria-label="item.starred ? 'Remove star' : 'Star'"
+                :disabled="openId !== null && threadBusy(openId)"
+                @click="changeStar(item)"
               >
-                Clear selection
+                <Star :size="16" :stroke-width="1.75" aria-hidden="true" />
+              </button>
+              <button
+                v-if="item.labelIds.includes('DRAFT')"
+                class="control"
+                type="button"
+                @click="requestEdit(item, $event)"
+              >
+                <File :size="16" :stroke-width="1.75" aria-hidden="true" />
+                Edit draft
+              </button>
+              <button class="control" type="button" @click="requestSeed('reply', item, $event)">
+                <Reply :size="16" :stroke-width="1.75" aria-hidden="true" />
+                Reply
+              </button>
+              <button class="control" type="button" @click="requestSeed('reply-all', item, $event)">
+                <ReplyAll :size="16" :stroke-width="1.75" aria-hidden="true" />
+                Reply all
+              </button>
+              <button class="control" type="button" @click="requestSeed('forward', item, $event)">
+                <Forward :size="16" :stroke-width="1.75" aria-hidden="true" />
+                Forward
+              </button>
+              <button
+                v-if="hasRecipients(item)"
+                class="control"
+                type="button"
+                @click="toggleMeta(item.id)"
+              >
+                {{ expandedMeta[item.id] === true ? 'Hide details' : 'Show details' }}
               </button>
             </div>
             <div
-              v-if="canChangeMail() && selectedCount > 0"
-              class="mail-bulk"
-              :aria-busy="bulkBusy ? 'true' : undefined"
-            >
-              <button
-                class="control"
-                type="button"
-                :disabled="bulkBusy"
-                @click="bulkThreads('read')"
-              >
-                Mark as read
-              </button>
-              <button
-                class="control"
-                type="button"
-                :disabled="bulkBusy"
-                @click="bulkThreads('unread')"
-              >
-                Mark as unread
-              </button>
-              <button
-                v-if="labelId === 'INBOX' || activeQuery !== null"
-                class="control"
-                type="button"
-                :disabled="bulkBusy"
-                @click="bulkThreads('archive')"
-              >
-                Archive
-              </button>
-              <button
-                v-if="labelId === 'TRASH'"
-                class="control"
-                type="button"
-                :disabled="bulkBusy"
-                @click="bulkThreads('untrash')"
-              >
-                Restore
-              </button>
-              <button
-                v-if="labelId !== 'TRASH'"
-                class="control control-danger"
-                type="button"
-                :disabled="bulkBusy"
-                @click="bulkTrash = true"
-              >
-                Move to Trash
-              </button>
-              <button
-                class="control"
-                type="button"
-                :disabled="bulkBusy"
-                aria-describedby="bulk-star-note"
-                @click="bulkThreads('star')"
-              >
-                Star
-              </button>
-              <button
-                class="control"
-                type="button"
-                :disabled="bulkBusy"
-                aria-describedby="bulk-star-note"
-                @click="bulkThreads('unstar')"
-              >
-                Unstar
-              </button>
-              <p id="bulk-star-note" class="text-sm text-muted">
-                Star marks only the newest message in each conversation. Unstar removes the star
-                from messages that already have one, up to 50 per conversation. A conversation with
-                more starred messages is not reported as fully updated.
-              </p>
-              <label v-if="userLabels.length > 0" class="mail-bulk-label">
-                Label
-                <select
-                  id="bulk-label"
-                  v-model="bulkLabelId"
-                  class="field field-select"
-                  :disabled="bulkBusy"
-                >
-                  <option value="">Choose a label</option>
-                  <option v-for="label in userLabels" :key="label.id" :value="label.id">
-                    {{ label.name }}
-                  </option>
-                </select>
-              </label>
-              <button
-                v-if="userLabels.length > 0"
-                class="control"
-                type="button"
-                :disabled="bulkBusy || bulkLabelId.length === 0"
-                @click="bulkUserLabel('add')"
-              >
-                Add
-              </button>
-              <button
-                v-if="userLabels.length > 0"
-                class="control"
-                type="button"
-                :disabled="bulkBusy || bulkLabelId.length === 0"
-                @click="bulkUserLabel('remove')"
-              >
-                Remove
-              </button>
-              <p v-else class="text-sm text-muted">No labels. Open Labels to create one.</p>
-            </div>
-            <p v-if="bulkStatus" role="status">{{ bulkStatus }}</p>
-            <StatusPanel
-              v-if="threads.length === 0"
-              kind="empty"
-              title="No conversations"
-              message="This mailbox has no conversations to show."
+              v-if="item.html"
+              class="mail-reading mail-body"
+              @click="onHtmlClick"
+              v-html="item.html"
             />
-            <div v-else class="mail-list">
-              <ul class="mail-rows">
-                <li
-                  v-for="thread in threads"
-                  :key="thread.id"
-                  class="mail-row-line"
-                  :class="{ 'has-select': canChangeMail() }"
-                >
-                  <label v-if="canChangeMail()" class="mail-check">
-                    <input
-                      type="checkbox"
-                      :checked="rowSelected(thread.id)"
-                      :aria-label="`Select ${thread.subject ?? '(no subject)'}`"
-                      :disabled="bulkBusy"
-                      @change="toggleRow(thread.id)"
-                    />
-                  </label>
-                  <button
-                    class="mail-row"
-                    :class="{ 'is-unread': thread.unread }"
-                    type="button"
-                    @click="openThread(thread.id)"
-                  >
-                    <span
-                      class="mail-unread"
-                      :class="{ 'is-on': thread.unread }"
-                      aria-hidden="true"
-                    ></span>
-                    <span class="mail-copy">
-                      <span class="mail-line-primary">
-                        <Star
-                          v-if="thread.starred"
-                          class="mail-star"
-                          :size="16"
-                          :stroke-width="1.75"
-                          aria-hidden="true"
-                        />
-                        <span class="mail-subject">{{ thread.subject ?? '(no subject)' }}</span>
-                        <span v-if="thread.snippet" class="mail-snippet">{{ thread.snippet }}</span>
-                      </span>
-                      <span class="mail-line-secondary">
-                        <span class="mail-sender">{{ thread.from }}</span>
-                        <span class="mail-date">{{ formatDate(thread.date) }}</span>
-                      </span>
-                    </span>
-                    <span v-if="thread.unread" class="sr-only">Unread</span>
-                    <span v-if="thread.starred" class="sr-only">Starred</span>
-                  </button>
-                  <div
-                    class="mail-row-actions"
-                    :aria-busy="threadBusy(thread.id) ? 'true' : undefined"
-                  >
-                    <button
-                      class="control"
-                      type="button"
-                      :aria-label="thread.unread ? 'Mark as read' : 'Mark as unread'"
-                      :disabled="threadBusy(thread.id) || bulkBusy"
-                      @click="changeRead(thread.id, !thread.unread)"
-                    >
-                      <MailOpen
-                        v-if="thread.unread"
-                        :size="16"
-                        :stroke-width="1.75"
-                        aria-hidden="true"
-                      />
-                      <Mail v-else :size="16" :stroke-width="1.75" aria-hidden="true" />
-                    </button>
-                    <button
-                      v-if="labelId === 'TRASH'"
-                      class="control"
-                      type="button"
-                      aria-label="Restore"
-                      :disabled="threadBusy(thread.id) || bulkBusy"
-                      @click="restoreConversation(thread.id)"
-                    >
-                      <RotateCcw :size="16" :stroke-width="1.75" aria-hidden="true" />
-                    </button>
-                    <button
-                      v-else-if="labelId === 'INBOX' || activeQuery !== null"
-                      class="control"
-                      type="button"
-                      aria-label="Archive"
-                      :disabled="threadBusy(thread.id) || bulkBusy"
-                      @click="archiveConversation(thread.id)"
-                    >
-                      <Archive :size="16" :stroke-width="1.75" aria-hidden="true" />
-                    </button>
-                    <button
-                      v-if="labelId !== 'TRASH'"
-                      class="control control-danger"
-                      type="button"
-                      aria-label="Move to Trash"
-                      :disabled="threadBusy(thread.id) || bulkBusy"
-                      @click="askTrash(thread.id, $event)"
-                    >
-                      <Trash2 :size="16" :stroke-width="1.75" aria-hidden="true" />
-                    </button>
-                  </div>
-                </li>
-              </ul>
-            </div>
-            <div class="mail-pager">
-              <button
-                class="control"
-                type="button"
-                :disabled="pageIndex === 0"
-                @click="showPrevious"
-              >
-                Previous
-              </button>
-              <button
-                class="control"
-                type="button"
-                :disabled="nextPageToken === null"
-                @click="showNext"
-              >
-                Next
-              </button>
-            </div>
-          </template>
-        </div>
-      </div>
-      <div v-else class="mail-stage">
-        <div class="conversation-header">
-          <button class="control" type="button" @click="back">
-            <ChevronLeft :size="16" :stroke-width="1.75" aria-hidden="true" />
-            Back
-          </button>
-          <button class="control" type="button" @click="requestNewMessage">
-            <SquarePen :size="16" :stroke-width="1.75" aria-hidden="true" />
-            Compose
-          </button>
-          <h2 class="conversation-subject">{{ conversationSubject }}</h2>
-          <p class="conversation-date">{{ formatDate(conversationDate) }}</p>
-        </div>
-        <div class="conversation-actions">
-          <button
-            class="control"
-            type="button"
-            :disabled="openId !== null && threadBusy(openId)"
-            :aria-busy="openId !== null && threadBusy(openId) ? 'true' : undefined"
-            @click="changeRead(openId ?? '', !conversationUnread)"
-          >
-            <MailOpen
-              v-if="conversationUnread"
-              :size="16"
-              :stroke-width="1.75"
-              aria-hidden="true"
-            />
-            <Mail v-else :size="16" :stroke-width="1.75" aria-hidden="true" />
-            {{ conversationUnread ? 'Mark read' : 'Mark unread' }}
-          </button>
-          <button
-            v-if="conversationInTrash"
-            class="control"
-            type="button"
-            :disabled="openId !== null && threadBusy(openId)"
-            @click="restoreConversation(openId ?? '')"
-          >
-            <RotateCcw :size="16" :stroke-width="1.75" aria-hidden="true" />
-            Restore
-          </button>
-          <button
-            v-else-if="conversationInInbox"
-            class="control"
-            type="button"
-            :disabled="openId !== null && threadBusy(openId)"
-            @click="archiveConversation(openId ?? '')"
-          >
-            <Archive :size="16" :stroke-width="1.75" aria-hidden="true" />
-            Archive
-          </button>
-          <button
-            v-if="!conversationInTrash"
-            class="control control-danger"
-            type="button"
-            :disabled="openId !== null && threadBusy(openId)"
-            @click="askTrash(openId ?? '', $event)"
-          >
-            <Trash2 :size="16" :stroke-width="1.75" aria-hidden="true" />
-            Trash
-          </button>
-          <button
-            class="control"
-            type="button"
-            aria-haspopup="listbox"
-            :aria-expanded="labelsOpen"
-            @click="labelsOpen = !labelsOpen"
-          >
-            <Tag :size="16" :stroke-width="1.75" aria-hidden="true" />
-            Labels
-          </button>
-        </div>
-        <p v-if="selectedAccount && selectedAccount.canModifyMail !== true" role="status">
-          Reconnect this Google account before changing mail.
-          <RouterLink class="text-link" to="/integrations">Reconnect</RouterLink>
-        </p>
-        <p v-if="actionNotice && openId !== null" role="alert">{{ actionNotice }}</p>
-        <div v-if="labelsOpen" class="label-menu" role="listbox" aria-label="Labels">
-          <p v-if="userLabels.length === 0">No labels</p>
-          <button
-            v-for="label in userLabels"
-            :key="label.id"
-            class="control"
-            type="button"
-            role="option"
-            :aria-pressed="labelApplied(label.id)"
-            :disabled="openId !== null && threadBusy(openId)"
-            @click="toggleUserLabel(label)"
-          >
-            {{ label.name }}
-          </button>
-        </div>
-        <StatusPanel
-          v-if="status === 'loading'"
-          kind="loading"
-          title="Loading"
-          message="Loading the conversation."
-        />
-        <template v-else-if="status === 'error'">
-          <StatusPanel kind="error" title="Mail is unavailable" :message="detail" />
-          <RouterLink v-if="showRecovery" class="text-link" to="/integrations">
-            Integrations
-          </RouterLink>
-        </template>
-        <article v-for="item in messages" v-else :key="item.id" class="mail-message">
-          <div class="mail-meta">
-            <p class="mail-meta-line" :class="{ 'is-open': expandedMeta[item.id] === true }">
-              <span v-if="item.unread">Unread </span>
-              <span>From {{ item.from }}</span>
-              <span v-if="item.to"> To {{ item.to }}</span>
-              <span v-if="item.cc"> Cc {{ item.cc }}</span>
-              <span v-if="item.bcc"> Bcc {{ item.bcc }}</span>
+            <p v-else-if="item.text" class="mail-reading mail-body mail-plain">{{ item.text }}</p>
+            <p v-if="item.imagesOmitted" class="mail-note">
+              Images in this message were not loaded.
             </p>
-            <button
-              class="control"
-              type="button"
-              :aria-pressed="item.starred"
-              :aria-label="item.starred ? 'Remove star' : 'Star'"
-              :disabled="openId !== null && threadBusy(openId)"
-              @click="changeStar(item)"
-            >
-              <Star :size="16" :stroke-width="1.75" aria-hidden="true" />
-            </button>
-            <button
-              v-if="item.labelIds.includes('DRAFT')"
-              class="control"
-              type="button"
-              @click="requestEdit(item)"
-            >
-              <File :size="16" :stroke-width="1.75" aria-hidden="true" />
-              Edit draft
-            </button>
-            <button class="control" type="button" @click="requestSeed('reply', item)">
-              <Reply :size="16" :stroke-width="1.75" aria-hidden="true" />
-              Reply
-            </button>
-            <button class="control" type="button" @click="requestSeed('reply-all', item)">
-              <ReplyAll :size="16" :stroke-width="1.75" aria-hidden="true" />
-              Reply all
-            </button>
-            <button class="control" type="button" @click="requestSeed('forward', item)">
-              <Forward :size="16" :stroke-width="1.75" aria-hidden="true" />
-              Forward
-            </button>
-            <button
-              v-if="hasRecipients(item)"
-              class="control"
-              type="button"
-              @click="toggleMeta(item.id)"
-            >
-              {{ expandedMeta[item.id] === true ? 'Hide details' : 'Show details' }}
-            </button>
-          </div>
-          <div
-            v-if="item.html"
-            class="mail-reading mail-body"
-            @click="onHtmlClick"
-            v-html="item.html"
-          />
-          <p v-else-if="item.text" class="mail-reading mail-body mail-plain">{{ item.text }}</p>
-          <p v-if="item.imagesOmitted" class="mail-note">Images in this message were not loaded.</p>
-          <ul v-if="item.attachments.length > 0" class="mail-attachments">
-            <li
-              v-for="attachment in item.attachments"
-              :key="attachment.fileName + attachment.size"
-              class="mail-attachment"
-            >
-              <Paperclip :size="16" :stroke-width="1.75" aria-hidden="true" />
-              {{ attachment.fileName }} · {{ attachment.mimeType }} · {{ attachment.size }}
-              <button
-                v-if="attachment.attachmentId !== null || attachment.partId !== null"
-                class="control"
-                type="button"
-                :aria-busy="
-                  downloadKey ===
-                  `${item.id}:${attachment.partId ?? ''}:${attachment.attachmentId ?? ''}`
-                    ? 'true'
-                    : undefined
-                "
-                :disabled="
-                  downloadKey ===
-                  `${item.id}:${attachment.partId ?? ''}:${attachment.attachmentId ?? ''}`
-                "
-                @click="downloadAttachment(item.id, attachment)"
+            <ul v-if="item.attachments.length > 0" class="mail-attachments">
+              <li
+                v-for="attachment in item.attachments"
+                :key="attachment.fileName + attachment.size"
+                class="mail-attachment"
               >
-                Download
-              </button>
-            </li>
-          </ul>
-        </article>
-      </div>
-    </template>
+                <Paperclip :size="16" :stroke-width="1.75" aria-hidden="true" />
+                {{ attachment.fileName }} · {{ attachment.mimeType }} · {{ attachment.size }}
+                <button
+                  v-if="attachment.attachmentId !== null || attachment.partId !== null"
+                  class="control"
+                  type="button"
+                  :aria-busy="
+                    downloadKey ===
+                    `${item.id}:${attachment.partId ?? ''}:${attachment.attachmentId ?? ''}`
+                      ? 'true'
+                      : undefined
+                  "
+                  :disabled="
+                    downloadKey ===
+                    `${item.id}:${attachment.partId ?? ''}:${attachment.attachmentId ?? ''}`
+                  "
+                  @click="downloadAttachment(item.id, attachment)"
+                >
+                  Download
+                </button>
+              </li>
+            </ul>
+          </article>
+        </div>
+      </template>
+    </div>
+    <div
+      v-if="activeModal !== null"
+      class="mail-backdrop"
+      tabindex="-1"
+      @mousedown.prevent
+      @click.prevent
+    />
     <div
       v-if="bulkTrash"
       class="mail-dialog"
       role="dialog"
       aria-modal="true"
       aria-labelledby="bulk-trash-title"
-      @keydown.esc="bulkTrash = false"
+      :data-mail-modal="activeModal === 'bulk-trash' ? 'active' : 'inactive'"
     >
       <h2 id="bulk-trash-title">Move {{ selectedCount }} conversations to Trash?</h2>
       <p>You can restore these conversations from Trash.</p>
@@ -2601,18 +2846,19 @@ watch(pendingMailOpen, () => {
       </button>
     </div>
     <div
-      v-if="labelsDialog"
+      v-if="labelsDialog && deleteLabelTarget === null"
       class="mail-dialog"
       role="dialog"
       aria-modal="true"
       aria-labelledby="labels-title"
-      @keydown.esc="labelsDialog = false"
+      :data-mail-modal="activeModal === 'labels' ? 'active' : 'inactive'"
     >
       <h2 id="labels-title">Labels</h2>
       <p v-if="labelNotice" role="status">{{ labelNotice }}</p>
       <label for="new-label">Name</label>
       <input
         id="new-label"
+        ref="labelNameInput"
         v-model="labelName"
         class="field field-text"
         type="text"
@@ -2652,10 +2898,11 @@ watch(pendingMailOpen, () => {
               Rename
             </button>
             <button
+              :id="`delete-label-${label.id}`"
               class="control control-danger"
               type="button"
               :disabled="labelBusy"
-              @click="deleteLabelTarget = label"
+              @click="askDeleteLabel(label)"
             >
               Delete
             </button>
@@ -2666,11 +2913,11 @@ watch(pendingMailOpen, () => {
     </div>
     <div
       v-if="deleteLabelTarget !== null"
-      class="mail-dialog"
+      class="mail-dialog mail-confirm"
       role="dialog"
       aria-modal="true"
       aria-labelledby="delete-label-title"
-      @keydown.esc="deleteLabelTarget = null"
+      data-mail-modal="active"
     >
       <h2 id="delete-label-title">Delete {{ deleteLabelTarget.name }}?</h2>
       <p>Gmail will remove this label from every conversation. Messages stay in Gmail.</p>
@@ -2688,10 +2935,11 @@ watch(pendingMailOpen, () => {
     </div>
     <div
       v-if="trashTarget !== null"
-      class="mail-dialog"
+      class="mail-dialog mail-confirm"
       role="dialog"
+      aria-modal="true"
       aria-labelledby="trash-title"
-      @keydown.esc="closeTrash"
+      data-mail-modal="active"
     >
       <h2 id="trash-title">Move to Trash?</h2>
       <p>You can restore this conversation from Trash.</p>
@@ -2708,7 +2956,8 @@ watch(pendingMailOpen, () => {
       role="dialog"
       aria-modal="true"
       aria-labelledby="compose-title"
-      @keydown="onComposeKeydown"
+      :data-mail-modal="activeModal === 'compose' ? 'active' : 'inactive'"
+      :inert="activeModal === 'compose' ? undefined : true"
     >
       <h2 id="compose-title">{{ compose.locked ? 'Draft' : composeTitle(compose.kind) }}</h2>
       <p v-if="composeStatus" role="status">{{ composeStatus }}</p>
@@ -2896,7 +3145,7 @@ watch(pendingMailOpen, () => {
           class="control"
           type="button"
           :disabled="compose.sending"
-          @click="pendingDelete = true"
+          @click="askDeleteDraft($event)"
         >
           Delete draft
         </button>
@@ -2927,11 +3176,13 @@ watch(pendingMailOpen, () => {
       role="dialog"
       aria-modal="true"
       aria-labelledby="delete-draft-title"
-      @keydown.esc.prevent="pendingDelete = false"
+      data-mail-modal="active"
     >
       <h2 id="delete-draft-title">Delete this draft?</h2>
       <p>Gmail will permanently delete this draft. This is not Trash.</p>
-      <button class="control" type="button" @click="pendingDelete = false">Keep</button>
+      <button ref="keepDraftButton" class="control" type="button" @click="pendingDelete = false">
+        Keep
+      </button>
       <button class="control control-danger" type="button" @click="confirmDeleteDraft">
         Delete
       </button>
@@ -2942,7 +3193,7 @@ watch(pendingMailOpen, () => {
       role="dialog"
       aria-modal="true"
       aria-labelledby="discard-title"
-      @keydown.esc.prevent="keepCompose"
+      data-mail-modal="active"
     >
       <h2 id="discard-title">Discard this message?</h2>
       <p v-if="compose?.draftId">Unsaved changes will be lost. The saved Gmail draft will stay.</p>

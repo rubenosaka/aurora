@@ -130,7 +130,7 @@ interface Box {
   sync: MailboxSync;
   calls: Array<{ accountId: string; url: string }>;
   toasts: SyncToastInput[];
-  events: Array<{ channel: string; payload: unknown }>;
+  events: Array<{ channel: string; payload: unknown; historyId: string | null }>;
   accounts: GoogleAccountSummary[];
   bulk: Set<string>;
   clock: Date;
@@ -176,7 +176,7 @@ function box(answer?: Box['answer']): Box {
       }
     },
     notify: { show: (input) => toasts.push(input) },
-    emit: (channel, payload) => events.push({ channel, payload }),
+    emit: (channel, payload) => events.push({ channel, payload, historyId: cursor(file) }),
     read(accountId, url) {
       calls.push({ accountId, url });
       return Promise.resolve(state.answer(accountId, url));
@@ -806,6 +806,87 @@ describe('mailbox sync', () => {
     state.sync.focus(ada);
     await tick();
     assert.equal(state.delays.length, 1);
+  });
+
+  it('stores the history cursor before the renderer refresh and skips an untouched conversation', async () => {
+    const other = box(() => ({
+      historyId: '110',
+      history: [
+        {
+          id: '110',
+          labelsRemoved: [
+            {
+              message: { id: 'messageother', threadId: 'threadother', labelIds: ['INBOX'] },
+              labelIds: ['UNREAD']
+            }
+          ]
+        }
+      ]
+    }));
+    other.file
+      .prepare('INSERT INTO mailbox_sync (account_id, history_id, updated_at) VALUES (?, ?, ?)')
+      .run(ada, '100', '2026-11-09T11:00:00.000Z');
+    other.sync.reportView({
+      accountId: ada,
+      labelId: 'INBOX',
+      query: null,
+      threadId: 'threadopen'
+    });
+    other.sync.focus(ada);
+    await tick();
+    const page = other.events.find((event) => {
+      const payload = event.payload;
+      return (
+        typeof payload === 'object' &&
+        payload !== null &&
+        'refresh' in payload &&
+        payload.refresh === 'page'
+      );
+    });
+    assert.equal(page?.historyId, '110');
+    assert.deepEqual(page?.payload, {
+      accountId: ada,
+      refresh: 'page',
+      threadId: null
+    });
+    const named = box(() => ({
+      historyId: '110',
+      history: [
+        {
+          id: '110',
+          labelsRemoved: [
+            {
+              message: { id: 'messageopen', threadId: 'threadopen', labelIds: ['INBOX'] },
+              labelIds: ['UNREAD']
+            }
+          ]
+        }
+      ]
+    }));
+    named.file
+      .prepare('INSERT INTO mailbox_sync (account_id, history_id, updated_at) VALUES (?, ?, ?)')
+      .run(ada, '100', '2026-11-09T11:00:00.000Z');
+    named.sync.reportView({
+      accountId: ada,
+      labelId: 'INBOX',
+      query: null,
+      threadId: 'threadopen'
+    });
+    named.sync.focus(ada);
+    await tick();
+    assert.equal(refreshed(named), 'thread');
+    assert.equal(
+      named.events.some((event) => {
+        const payload = event.payload;
+        return (
+          typeof payload === 'object' &&
+          payload !== null &&
+          'threadId' in payload &&
+          payload.threadId === 'threadopen'
+        );
+      }),
+      true
+    );
   });
 });
 
